@@ -1,0 +1,2 @@
+"""World initialization domain package."""
+
