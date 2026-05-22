@@ -12,7 +12,13 @@ from game.world_init.agents import (
     build_debate_profiles,
     build_synthesizer_profile,
 )
-from game.world_init.prompts import build_causality_task, build_debate_task, build_guard_task, build_synthesis_task
+from game.world_init.prompts import (
+    build_causality_task,
+    build_debate_task,
+    build_guard_task,
+    build_revision_task,
+    build_synthesis_task,
+)
 from game.world_init.schemas import CausalImpactPacket, PlayerWorldAnswer, WorldSeed, WorldSeedCandidate
 
 
@@ -31,8 +37,9 @@ class WorldInitResult(BaseModel):
 
 
 class WorldInitWorkflow:
-    def __init__(self, *, runtime: AgentRuntime):
+    def __init__(self, *, runtime: AgentRuntime, max_revisions: int = 1):
         self.runtime = runtime
+        self.max_revisions = max_revisions
         self.debate_session = DebateSession(runtime=runtime)
 
     async def run(self, answer: PlayerWorldAnswer) -> WorldInitResult:
@@ -52,10 +59,27 @@ class WorldInitWorkflow:
             build_guard_task(answer, candidate),
             GuardDecision,
         )
+
+        revisions = 0
+        while guard_decision.decision == "revise" and revisions < self.max_revisions:
+            revisions += 1
+            candidate = await self.runtime.run_agent(
+                build_synthesizer_profile(),
+                build_revision_task(answer, debate, candidate, guard_decision.findings),
+                WorldSeedCandidate,
+            )
+            guard_decision = await self.runtime.run_agent(
+                build_canon_guard_profile(),
+                build_guard_task(answer, candidate),
+                GuardDecision,
+            )
+
         if guard_decision.decision == "reject":
             raise ValueError(f"World seed candidate rejected: {guard_decision.findings}")
         if guard_decision.decision == "revise":
-            raise ValueError(f"World seed candidate revision requested but not implemented in MVP: {guard_decision.findings}")
+            raise ValueError(
+                f"World seed candidate still needs revision after {revisions} attempt(s): {guard_decision.findings}"
+            )
 
         world_seed = WorldSeed(
             premise=candidate.premise,

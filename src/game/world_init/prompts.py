@@ -36,6 +36,31 @@ def build_synthesis_task(answer: PlayerWorldAnswer, debate: DebateSessionResult)
     )
 
 
+def build_revision_task(
+    answer: PlayerWorldAnswer,
+    debate: DebateSessionResult,
+    candidate: WorldSeedCandidate,
+    guard_findings: list[str],
+) -> AgentTask:
+    return AgentTask(
+        instruction=(
+            "The canon guard asked you to revise the previous world seed candidate. "
+            "Address every guard finding while keeping the player's answer as canon and "
+            "preserving the parts of the candidate that were already sound."
+        ),
+        context={
+            "player_answer": answer.model_dump(),
+            "debate": debate.model_dump(),
+            "previous_candidate": candidate.model_dump(),
+            "guard_findings": guard_findings,
+        },
+        required_output=(
+            "Return a revised WorldSeedCandidate JSON object with premise, laws, tensions, "
+            "open_questions, and source_summary. Each guard finding must be resolved."
+        ),
+    )
+
+
 def build_guard_task(answer: PlayerWorldAnswer, candidate: WorldSeedCandidate) -> AgentTask:
     return AgentTask(
         instruction=(

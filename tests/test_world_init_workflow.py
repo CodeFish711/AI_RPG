@@ -88,6 +88,56 @@ async def test_world_init_workflow_runs_debate_synthesis_guard_and_causality():
 
 
 @pytest.mark.asyncio
+async def test_world_init_workflow_revises_candidate_when_guard_requests_revision():
+    class RevisingRuntime(FakeRuntime):
+        def __init__(self):
+            super().__init__()
+            self.guard_calls = 0
+
+        async def run_agent(self, profile: AgentProfile, task: AgentTask, output_schema: type[BaseModel]) -> BaseModel:
+            if output_schema is GuardDecision:
+                self.calls.append((profile.id, task.instruction, output_schema))
+                self.guard_calls += 1
+                if self.guard_calls == 1:
+                    return GuardDecision(decision="revise", findings=["Define memory tiers objectively."])
+                return GuardDecision(decision="accept", findings=[])
+            return await super().run_agent(profile, task, output_schema)
+
+    runtime = RevisingRuntime()
+    workflow = WorldInitWorkflow(runtime=runtime)
+    answer = PlayerWorldAnswer(question_id="q", question_text="Question", answer_text="Answer")
+
+    result = await workflow.run(answer)
+
+    assert result.guard_decision.decision == "accept"
+    assert [call[0] for call in runtime.calls] == [
+        "expander",
+        "critic",
+        "drama_designer",
+        "synthesizer",
+        "canon_guard",
+        "synthesizer",
+        "canon_guard",
+        "causality_analyzer",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_world_init_workflow_raises_when_revision_budget_is_exhausted():
+    class AlwaysRevisingRuntime(FakeRuntime):
+        async def run_agent(self, profile: AgentProfile, task: AgentTask, output_schema: type[BaseModel]) -> BaseModel:
+            if output_schema is GuardDecision:
+                return GuardDecision(decision="revise", findings=["Still ambiguous."])
+            return await super().run_agent(profile, task, output_schema)
+
+    workflow = WorldInitWorkflow(runtime=AlwaysRevisingRuntime(), max_revisions=2)
+    answer = PlayerWorldAnswer(question_id="q", question_text="Question", answer_text="Answer")
+
+    with pytest.raises(ValueError, match="still needs revision after 2"):
+        await workflow.run(answer)
+
+
+@pytest.mark.asyncio
 async def test_world_init_workflow_raises_when_guard_rejects_candidate():
     class RejectingRuntime(FakeRuntime):
         async def run_agent(self, profile: AgentProfile, task: AgentTask, output_schema: type[BaseModel]) -> BaseModel:
