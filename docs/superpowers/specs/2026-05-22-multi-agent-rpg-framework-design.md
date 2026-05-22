@@ -97,11 +97,63 @@ model: mimo-v2.5-pro
 - `MiMo-V2.5-Pro` 这个大小写形式会返回模型不支持。
 - `/v1/models` 返回的可用 ID 是 `mimo-v2.5-pro`。
 - 使用 `mimo-v2.5-pro` 的 chat completion 可以成功返回内容。
-- 短结构化响应建议附带 `thinking: {"type": "disabled"}`，否则输出预算可能被隐藏 reasoning 消耗。
+- 短结构化 smoke test 建议附带 `thinking: {"type": "disabled"}`，否则输出预算可能被隐藏 reasoning 消耗。
+- 关键推理任务不应全局关闭 thinking，应由 request 或 agent task 显式选择。
+- `thinking: {"type": "enabled"}` 已实测可用；但 `max_tokens=128` 时正文可能为空，因为 token 被 reasoning 消耗。
+- 开启 thinking 的结构化任务应使用更高 `max_tokens`，MVP 建议不低于 1024，世界构建和辩论默认 4096。
 
 API Key 必须通过环境变量传入，不能写入仓库。
 
-## 5. Core 通用 Schema
+## 5. Thinking Policy
+
+Thinking 不能做成全局开关。MVP 使用三档策略，在每次请求或 Agent 任务上选择推理深度。
+
+```text
+disabled  # 快速、便宜，适合高频或格式稳定任务
+auto      # 默认策略，由任务类型和 Agent profile 决定
+enabled   # 深推理，适合世界构建、辩论、裁决、因果分析
+```
+
+推荐映射：
+
+| 场景 | Thinking |
+|---|---|
+| 开局世界构建 | enabled |
+| Multi-Agent Debate | enabled |
+| Synthesizer 融合世界种子 | enabled |
+| CanonGuard 一致性裁决 | enabled |
+| CausalityAnalyzer 蝴蝶效应分析 | enabled |
+| MemoryCurator 摘要入库 | auto |
+| 普通高频对话 | disabled |
+| 关键运行时决策 | enabled |
+| Schema 修复重试 | disabled |
+
+Token 预算规则：
+
+- `thinking=enabled` 时，Gateway 应保证 `max_tokens` 不低于配置下限。
+- 若供应商返回 `finish_reason=length`、正文为空、且 usage 中 reasoning token 明显大于 0，Gateway 应自动用更高 `max_tokens` 重试一次。
+- Schema 修复重试优先关闭 thinking，因为修复阶段目标是格式收敛，不是重新推理。
+
+策略优先级：
+
+```text
+AgentTask.thinking_override
+-> AgentProfile.thinking
+-> LLMGateway default_thinking
+```
+
+Token 预算优先级：
+
+```text
+AgentTask.max_tokens_override
+-> AgentProfile.max_tokens
+-> LLMRequest.max_tokens
+-> LLMGateway minimum_for_thinking_enabled
+```
+
+Gateway 只负责把策略翻译成 provider payload，不负责判断某个游戏场景是否重要。场景重要性由 `game/` 层或 Agent profile 声明。
+
+## 6. Core 通用 Schema
 
 `core/schemas.py` 只定义内容无关的数据契约。
 
@@ -118,11 +170,16 @@ class Message(BaseModel):
     content: str
 
 
+class ThinkingPolicy(BaseModel):
+    type: Literal["disabled", "auto", "enabled"] = "auto"
+
+
 class LLMRequest(BaseModel):
     messages: list[Message]
     model: str = "mimo-v2.5-pro"
     temperature: float = 0.7
     max_tokens: int = 4096
+    thinking: ThinkingPolicy = Field(default_factory=ThinkingPolicy)
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -165,14 +222,14 @@ class SimulationNode(BaseModel):
 
 这些 Schema 不包含游戏业务名词。
 
-## 6. LLM Gateway
+## 7. LLM Gateway
 
 `core/llm_gateway.py` 是唯一直接访问外部模型供应商的底层组件。
 
 职责：
 
 - 构造 OpenAI 兼容 chat completion 请求。
-- 默认附带 `thinking: {"type": "disabled"}`。
+- 根据 `LLMRequest.thinking` 构造 provider payload。
 - 在付费调用前查询语义缓存。
 - 从 LLM 原始输出中提取 JSON。
 - 使用 Pydantic 校验结构化响应。
@@ -209,12 +266,21 @@ call model
 -> extract JSON
 -> Pydantic validate
 -> 如果失败，把校验错误和目标 schema 写回上下文
--> 降低 temperature 后重试
+-> 降低 temperature，并把 thinking 切到 disabled 后重试
+-> 如果 thinking enabled 导致正文为空且 finish_reason=length，提高 max_tokens 后重试
 -> 多次失败后抛出 GatewaySchemaError
 -> 供应商连续失败后打开 circuit breaker
 ```
 
-## 7. Universal RAG Repository
+Provider payload 规则：
+
+```text
+ThinkingPolicy(type="disabled") -> {"thinking": {"type": "disabled"}}
+ThinkingPolicy(type="enabled")  -> {"thinking": {"type": "enabled"}}
+ThinkingPolicy(type="auto")     -> 不强制覆盖供应商默认，或使用配置中的默认策略
+```
+
+## 8. Universal RAG Repository
 
 `core/rag_repository.py` 封装 Chroma，只暴露统一记忆接口。
 
@@ -245,11 +311,11 @@ MVP 实现：
 
 Repository 存储的是 memory fragment，不是领域对象。领域对象由 `game/` 工作流转换为文本和 metadata 后写入。
 
-## 8. Agent Runtime
+## 9. Agent Runtime
 
 `core/agents/` 提供受监管的多智能体执行能力。
 
-### 8.1 Agent Schema
+### 9.1 Agent Schema
 
 ```python
 from typing import Any, Literal
@@ -257,7 +323,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from core.schemas import Message
+from core.schemas import Message, ThinkingPolicy
 
 
 class AgentProfile(BaseModel):
@@ -267,6 +333,8 @@ class AgentProfile(BaseModel):
     objective: str
     style_rules: list[str] = Field(default_factory=list)
     temperature: float = 0.7
+    max_tokens: int = 4096
+    thinking: ThinkingPolicy = Field(default_factory=ThinkingPolicy)
     output_schema_name: str | None = None
 
 
@@ -275,6 +343,8 @@ class AgentTask(BaseModel):
     instruction: str
     context: dict[str, Any] = Field(default_factory=dict)
     required_output: str
+    thinking_override: ThinkingPolicy | None = None
+    max_tokens_override: int | None = None
 
 
 class AgentRunResult(BaseModel):
@@ -296,7 +366,7 @@ class ProposedChange(BaseModel):
     status: Literal["proposed", "accepted", "rejected"] = "proposed"
 ```
 
-### 8.2 AgentRuntime 接口
+### 9.2 AgentRuntime 接口
 
 ```python
 class AgentRuntime:
@@ -316,7 +386,7 @@ Runtime 将 profile 和 task 组装为 messages，调用 `LLMGateway.complete_an
 
 Runtime 不知道 world law、character、location、faction 等领域概念。
 
-## 9. Debate System
+## 10. Debate System
 
 `core/agents/debate.py` 提供通用辩论编排。具体 prompt 由 `game/` 注入。
 
@@ -344,7 +414,7 @@ MVP Debate Agents：
 
 Debate System 只产生结构化中间产物，不直接持久化。
 
-## 10. Game World Initialization Schema
+## 11. Game World Initialization Schema
 
 `game/world_init/schemas.py` 定义领域层世界种子。
 
@@ -405,7 +475,7 @@ class CausalImpactPacket(BaseModel):
 
 领域 Schema 可以包含游戏概念，因为它们不属于 Core Engine。
 
-## 11. Canon Guard
+## 12. Canon Guard
 
 `core/agents/guards.py` 放通用 guard 抽象。`game/world_init/workflow.py` 提供世界初始化所需的具体裁决 prompt。
 
@@ -438,7 +508,7 @@ MVP 行为：
 - revise：将 findings 反馈给 Synthesizer，最多修正一次。
 - reject：连续两次失败后抛出明确校验错误。
 
-## 12. Memory Curator
+## 13. Memory Curator
 
 Memory Curator 防止 RAG 变成原始对话垃圾堆。
 
@@ -465,7 +535,7 @@ content=<initial causal impact packet summary>
 
 Curator 可以调用 Agent 做摘要，但真正写入由 Repository 在校验后执行。
 
-## 13. Causality Analyzer
+## 14. Causality Analyzer
 
 Causality Analyzer 是第一版“多影响因子下的蝴蝶效应”机制。
 
@@ -490,7 +560,7 @@ Causality Analyzer 是第一版“多影响因子下的蝴蝶效应”机制。
 
 这样能保留长期因果发酵，同时避免 Agent 直接改世界。
 
-## 14. DAG Generation Pipeline
+## 15. DAG Generation Pipeline
 
 DAG 系统仍然是插件化生成管线。它负责协调普通生成技能和 Agent 工作流。
 
@@ -532,7 +602,7 @@ skill A 发现缺少前置依赖 X
 
 这让生成流程可以动态按需展开，而不是固定线性流程。
 
-## 15. World Tick Bus
+## 16. World Tick Bus
 
 Tick Bus 负责初始化后的持续世界推演。
 
@@ -549,7 +619,7 @@ MVP 职责：
 
 Tick Bus 不理解领域机制。它只知道 node、event、payload 和 memory fragment。
 
-## 16. 动态 Runtime Entity Agent
+## 17. 动态 Runtime Entity Agent
 
 Runtime Entity Agent 不是常驻进程，而是需要时临时组装的 prompt。
 
@@ -576,7 +646,7 @@ user input
 
 这样可以让实体拥有连续性，同时不需要让每个实体长期运行。
 
-## 17. MVP 开发路线图
+## 18. MVP 开发路线图
 
 ### Phase 1：Provider 与校验底座
 
@@ -595,7 +665,9 @@ class LLMGateway
 
 - OpenAI 兼容 request builder。
 - 默认模型 `mimo-v2.5-pro`。
-- 默认 `thinking: {"type": "disabled"}`。
+- 支持 per-request `ThinkingPolicy`。
+- 开启 thinking 时自动应用最小 token 预算。
+- Schema 修复重试时自动使用 `thinking: disabled`。
 - API key 从环境变量读取。
 - `complete()`。
 - `complete_and_parse()`。
@@ -694,7 +766,7 @@ write world seed and causal packet to Chroma
 print fragment IDs
 ```
 
-## 18. 测试策略
+## 19. 测试策略
 
 单元测试：
 
@@ -721,8 +793,9 @@ Live provider smoke test：
 - 需要环境变量提供 API key。
 - 只发送一次极小 chat completion。
 - 不进入普通 CI。
+- 默认使用 `thinking: disabled` 控制成本和短输出稳定性。
 
-## 19. MVP 验收标准
+## 20. MVP 验收标准
 
 MVP 完成条件：
 
@@ -734,8 +807,9 @@ MVP 完成条件：
 6. Causality Analyzer 写入一个合法 `CausalImpactPacket`。
 7. 全流程可在 2020 MacBook Pro M1 本地运行。
 8. 仓库中没有 API key 或供应商密钥。
+9. 关键推理任务能显式开启 thinking，普通高频任务能显式关闭 thinking。
 
-## 20. 已定设计决策
+## 21. 已定设计决策
 
 1. 使用 supervised multi-agent，不使用自由运行的 Agent 群。
 2. Pydantic 是唯一结构化输出契约。
@@ -745,4 +819,4 @@ MVP 完成条件：
 6. 当前 live model ID 使用 `mimo-v2.5-pro`。
 7. 第一闭环不实现完整 Runtime Entity Agent，只保留接口方向。
 8. Causality 用延迟影响包表达，不直接修改世界状态。
-
+9. Thinking 使用按任务配置的 `ThinkingPolicy`，关键推理开启，高频任务关闭。
