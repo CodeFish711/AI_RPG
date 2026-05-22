@@ -477,8 +477,6 @@ class CausalImpactPacket(BaseModel):
 
 ## 12. Canon Guard
 
-`core/agents/guards.py` 放通用 guard 抽象。`game/world_init/workflow.py` 提供世界初始化所需的具体裁决 prompt。
-
 Guard 职责：
 
 - 检查内部一致性。
@@ -487,38 +485,41 @@ Guard 职责：
 - 检查输出是否足够具体，能支持后续模拟。
 - 返回 accept、revise 或 reject。
 
-Schema：
+Schema（MVP 实现，位于 `game/world_init/workflow.py`）：
 
 ```python
-class GuardFinding(BaseModel):
-    severity: Literal["info", "warning", "error"]
-    message: str
-    path: str | None = None
-
-
 class GuardDecision(BaseModel):
     decision: Literal["accept", "revise", "reject"]
-    findings: list[GuardFinding]
-    revised_payload: dict[str, Any] | None = None
+    findings: list[str] = Field(default_factory=list)
 ```
 
 MVP 行为：
 
 - accept：把 `WorldSeedCandidate` 转为 `WorldSeed`。
-- revise：将 findings 反馈给 Synthesizer，最多修正一次。
-- reject：连续两次失败后抛出明确校验错误。
+- revise：将 `findings` 通过 `build_revision_task` 反馈给 Synthesizer 重新合成，
+  由 `WorldInitWorkflow.max_revisions` 限定修订轮数（默认一轮）。
+- reject：抛出明确校验错误；修订预算耗尽后仍为 revise 同样抛错。
+
+> 已实现说明：spec 早期设想的 `GuardFinding`（severity/path）与
+> `revised_payload`、以及 `core/agents/guards.py` 通用 guard 抽象尚未落地。
+> 当 Tick Loop 引入更多 guard 时再统一抽象，届时 `findings` 升级为结构化类型。
 
 ## 13. Memory Curator
 
 Memory Curator 防止 RAG 变成原始对话垃圾堆。
 
-职责：
+已实现说明：对 `WorldSeed`、`WorldLaw`、`CausalImpactPacket`、`NodeTickOutcome`
+这类**结构化产物**，MVP 使用确定性转换函数（`game/*/memory.py`）把对象转成
+带 metadata 的 `MemoryFragment`，不调用 LLM —— 确定、可复现、零额外成本。
+基于 Agent 的摘要式 Curator 仅在处理**自由文本运行时事件**时才需要，推后实现。
 
-- 总结辩论结果。
-- 提取可长期保存的事实。
+职责（转换函数 + 未来的摘要 Curator 共同覆盖）：
+
+- 把结构化领域对象转成可长期保存的 fragment。
 - 添加 metadata：`kind`、`source`、`world_seed_id`、`question_id`、`created_by`。
 - 将筛选后的 fragment 写入 Chroma。
 - 避免存储密钥或供应商凭证。
+- （推后）总结自由文本辩论 / 交互结果。
 
 示例 fragment：
 
@@ -618,6 +619,78 @@ MVP 职责：
 边界：
 
 Tick Bus 不理解领域机制。它只知道 node、event、payload 和 memory fragment。
+
+### 16.1 Tick Loop v0（首个推演闭环）
+
+MVP 的第一个推演闭环。目标是把静态 `WorldSeed` 变成能逐 tick 前进的世界，
+不追求覆盖完整模拟系统。
+
+核心模型：离散事件模拟。世界时间按 tick 逐格推进；主循环是确定性代码；
+LLM 只在节点被唤醒时调用一次，输出经 Pydantic 校验后才允许提交。LLM 失败
+不影响 tick 推进，本格降级处理。
+
+**`core/tick_bus.py`（确定性调度器，无领域知识）**
+
+```python
+class TickBus:
+    current_tick: int
+
+    def register_node(self, node: SimulationNode) -> None: ...
+    def schedule_event(self, event: TickEvent, fire_at_tick: int) -> None: ...
+    def advance(self) -> list[TickEvent]: ...   # tick += 1，返回本格到期事件
+    def pending_count(self) -> int: ...
+```
+
+TickBus 只认识 node / event / tick，不知道 world law、character、faction。
+
+**Bootstrap：因果包 → 初始节点与事件**
+
+世界初始化产出的 `CausalImpactPacket` 是推演的燃料。对每个 `CausalImpact`：
+
+- 用 `target_hint` 派生一个 `SimulationNode`（`node_type` 取自 `target_type`）。
+- 按 `delay_ticks` 把一个 `TickEvent` 登记到 TickBus。
+
+v0 用 metadata（节点 id / tags / world_seed_id）路由检索，不依赖语义向量，
+因此可以先不引入真 embedding。
+
+**节点回合（`game/world_sim/`）**
+
+节点被唤醒时，`game/` 层执行：
+
+```text
+取 RAG 上下文（metadata 过滤）
+-> 构造 node tick 任务
+-> AgentRuntime 跑节点 agent
+-> 校验得到 NodeTickOutcome
+```
+
+`NodeTickOutcome` 是领域层输出 schema：
+
+```python
+class NodeTickOutcome(BaseModel):
+    node_id: str
+    tick: int
+    narrative: str
+    proposed_changes: list[ProposedChange] = Field(default_factory=list)
+    new_impacts: list[CausalImpact] = Field(default_factory=list)
+```
+
+**提交**
+
+只有校验通过的 outcome 才提交：
+
+- 把 outcome 摘要转成 `MemoryFragment`（`kind=tick_outcome`）写入 RAG。
+- `new_impacts` 里每个新影响派生节点并按 `delay_ticks` 重新登记到 TickBus
+  —— 蝴蝶效应由此持续发酵。
+
+**循环与停止**
+
+`WorldTickWorkflow` 驱动：`for _ in range(max_ticks): bus.advance() ...`。
+跑满 `max_ticks` 或事件队列清空即停止。每个 tick 的事件、outcome、新影响
+都留有结构化记录，可回放、可审计。
+
+**v0 故意推后**：真语义 embedding（先用 metadata 路由）、DAG 生成管线、
+常驻 Runtime Entity Agent、语义缓存、熔断。
 
 ## 17. 动态 Runtime Entity Agent
 
@@ -766,6 +839,31 @@ write world seed and causal packet to Chroma
 print fragment IDs
 ```
 
+### Phase 7：Tick Loop v0
+
+文件：
+
+```text
+src/core/tick_bus.py
+src/game/world_sim/schemas.py
+src/game/world_sim/agents.py
+src/game/world_sim/prompts.py
+src/game/world_sim/memory.py
+src/game/world_sim/tick_workflow.py
+```
+
+实现：
+
+```text
+world-init causal packet
+-> bootstrap nodes + scheduled events
+-> tick loop: advance -> wake node -> reason -> validate -> commit
+-> new impacts rescheduled
+-> stop at max_ticks or empty queue
+```
+
+详细实现计划见 `docs/superpowers/plans/2026-05-22-tick-loop-v0-plan.md`。
+
 ## 19. 测试策略
 
 单元测试：
@@ -814,7 +912,8 @@ MVP 完成条件：
 1. 使用 supervised multi-agent，不使用自由运行的 Agent 群。
 2. Pydantic 是唯一结构化输出契约。
 3. MVP 使用 Chroma 持久化 RAG。
-4. 语义缓存和 RAG 使用本地 MiniLM embedding。
+4. MVP RAG 使用确定性 `hashed_text_embedding`（词面散列，非学习模型）；
+   真语义 embedding（MiniLM 或 provider embedding 接口）与语义缓存推后。
 5. LLM 调用使用 OpenAI 兼容 chat completion。
 6. 当前 live model ID 使用 `mimo-v2.5-pro`。
 7. 第一闭环不实现完整 Runtime Entity Agent，只保留接口方向。
