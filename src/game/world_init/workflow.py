@@ -6,13 +6,13 @@ from pydantic import BaseModel, Field
 
 from core.agents.debate import DebateSession, DebateSessionResult
 from core.agents.runtime import AgentRuntime
-from core.agents.schemas import AgentTask
 from game.world_init.agents import (
     build_causality_analyzer_profile,
     build_canon_guard_profile,
     build_debate_profiles,
     build_synthesizer_profile,
 )
+from game.world_init.prompts import build_causality_task, build_debate_task, build_guard_task, build_synthesis_task
 from game.world_init.schemas import CausalImpactPacket, PlayerWorldAnswer, WorldSeed, WorldSeedCandidate
 
 
@@ -38,36 +38,18 @@ class WorldInitWorkflow:
     async def run(self, answer: PlayerWorldAnswer) -> WorldInitResult:
         debate = await self.debate_session.run(
             build_debate_profiles(),
-            AgentTask(
-                instruction="Debate the player's world-building answer and return one structured debate turn.",
-                context={"player_answer": answer.model_dump()},
-                required_output="Return a DebateTurn JSON object.",
-            ),
+            build_debate_task(answer),
         )
 
         candidate = await self.runtime.run_agent(
             build_synthesizer_profile(),
-            AgentTask(
-                instruction="Synthesize the debate into a coherent world seed candidate.",
-                context={
-                    "player_answer": answer.model_dump(),
-                    "debate": debate.model_dump(),
-                },
-                required_output="Return a WorldSeedCandidate JSON object.",
-            ),
+            build_synthesis_task(answer, debate),
             WorldSeedCandidate,
         )
 
         guard_decision = await self.runtime.run_agent(
             build_canon_guard_profile(),
-            AgentTask(
-                instruction="Judge whether this world seed candidate is internally consistent and respects the player answer.",
-                context={
-                    "player_answer": answer.model_dump(),
-                    "candidate": candidate.model_dump(),
-                },
-                required_output="Return a GuardDecision JSON object.",
-            ),
+            build_guard_task(answer, candidate),
             GuardDecision,
         )
         if guard_decision.decision == "reject":
@@ -84,15 +66,7 @@ class WorldInitWorkflow:
 
         causal_packet = await self.runtime.run_agent(
             build_causality_analyzer_profile(),
-            AgentTask(
-                instruction="Create delayed causal impacts from the accepted world seed.",
-                context={
-                    "player_answer": answer.model_dump(),
-                    "world_seed": world_seed.model_dump(),
-                    "debate_tensions": debate.unresolved_tensions,
-                },
-                required_output="Return a CausalImpactPacket JSON object.",
-            ),
+            build_causality_task(answer, world_seed, debate.unresolved_tensions),
             CausalImpactPacket,
         )
         causal_packet = causal_packet.model_copy(update={"source_world_seed_id": world_seed.id})
@@ -105,4 +79,3 @@ class WorldInitWorkflow:
             world_seed=world_seed,
             causal_packet=causal_packet,
         )
-

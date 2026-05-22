@@ -1,6 +1,7 @@
+import math
 import pytest
 
-from core.rag_repository import ChromaRAGRepository, InMemoryRAGRepository
+from core.rag_repository import ChromaRAGRepository, InMemoryRAGRepository, hashed_text_embedding
 from core.schemas import MemoryFragment
 
 
@@ -48,3 +49,12 @@ def test_chroma_repository_reports_missing_optional_dependency():
             ChromaRAGRepository()
     else:
         pytest.skip("chromadb is installed in this environment")
+
+
+def test_hashed_text_embedding_is_deterministic_and_normalized():
+    first = hashed_text_embedding("memory price", dimensions=16)
+    second = hashed_text_embedding("memory price", dimensions=16)
+
+    assert first == second
+    assert len(first) == 16
+    assert math.isclose(math.sqrt(sum(value * value for value in first)), 1.0)
