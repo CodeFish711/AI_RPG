@@ -25,6 +25,7 @@ python -m pytest tests/test_llm_gateway.py::test_name -q   # one test
 # Scripts and the MVP entrypoint need src/ on the path:
 PYTHONPATH=src python -m main --answer "..."          # offline-safe? no — calls live LLM
 PYTHONPATH=src python scripts/live_world_init.py --live   # full world-init pass against the LLM
+PYTHONPATH=src python scripts/live_world_sim.py --live --ticks 4   # world-init + Tick Loop v0 simulation
 PYTHONPATH=src python scripts/smoke_mimo_gateway.py       # provider connectivity check
 PYTHONPATH=src python scripts/check_chroma_repository.py  # Chroma persistence check (needs [rag])
 ```
@@ -66,17 +67,32 @@ The system is a validate-then-commit pipeline. Agents only propose; `core/` deci
   uses a deterministic hashed-text embedding, not a learned model).
 - `agents/runtime.py` — `AgentRuntime.run_agent(profile, task, schema)` builds the
   system/user messages from an `AgentProfile` + `AgentTask` and delegates to the gateway.
-- `agents/debate.py` — `DebateSession` runs each profile once and collects `DebateTurn`s.
+- `agents/debate.py` — `DebateSession` runs each profile once, collects `DebateTurn`s, and
+  aggregates their `concerns` into `DebateSessionResult.unresolved_tensions`.
+- `tick_bus.py` — `TickBus`, the deterministic discrete-event scheduler. Holds
+  `current_tick`, a node registry, and a per-tick event queue; `advance()` steps one tick
+  and returns due `TickEvent`s. Knows only nodes/events/ticks — no domain concepts.
 
-**Game layer (`src/game/world_init/`)** — the MVP "world initialization" closed loop:
-`workflow.py` `WorldInitWorkflow.run()` chains: Debate agents (Expander / Critic /
-Drama Designer) → Synthesizer → `WorldSeedCandidate` → Canon Guard (`accept`/`revise`/
-`reject` — non-accept currently raises) → `WorldSeed` → Causality Analyzer →
-`CausalImpactPacket`. `agents.py` defines profiles, `prompts.py` builds tasks,
-`schemas.py` holds domain schemas, `memory.py` converts seeds/packets to `MemoryFragment`s.
+**Game layer**
+
+`game/world_init/` — the "world initialization" closed loop. `workflow.py`
+`WorldInitWorkflow.run()` chains: Debate agents (Expander / Critic / Drama Designer) →
+Synthesizer → `WorldSeedCandidate` → Canon Guard (`accept`/`revise`/`reject`; `revise`
+re-synthesizes up to `max_revisions` times, `reject` raises) → `WorldSeed` → Causality
+Analyzer → `CausalImpactPacket`.
+
+`game/world_sim/` — Tick Loop v0 (see spec §16.1). `tick_workflow.py`
+`WorldTickWorkflow.run()` bootstraps a `TickBus` from a `CausalImpactPacket` (each impact
+→ a `SimulationNode` + a scheduled event), then loops: `advance` → wake node → retrieve
+RAG context by `world_seed_id` metadata → reason (`NodeTickOutcome`) → commit fragment +
+reschedule `new_impacts`. Stops at `max_ticks` or when the queue empties.
+
+Both packages follow the same shape: `agents.py` profiles, `prompts.py` tasks,
+`schemas.py` domain schemas, `memory.py` deterministic object → `MemoryFragment` conversion.
 
 **Entrypoint** — `src/main.py` `run_world_init_mvp()` runs the workflow then upserts the
-resulting fragments into a RAG repository.
+resulting fragments into a RAG repository. `scripts/live_world_sim.py` chains world-init
+into the tick loop.
 
 When adding new `core/` Protocols, prefer the existing pattern: a `Protocol` interface plus
 concrete impls, dependency-injected (see `StructuredGateway`, `UniversalRAGRepository`).

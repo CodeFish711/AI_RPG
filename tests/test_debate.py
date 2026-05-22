@@ -39,6 +39,33 @@ async def test_debate_session_runs_each_agent_and_collects_turns():
 
 
 @pytest.mark.asyncio
+async def test_debate_session_aggregates_turn_concerns_into_unresolved_tensions():
+    class ConcernedRuntime:
+        async def run_agent(self, profile: AgentProfile, task: AgentTask, output_schema: type):
+            concerns = {
+                "expander": ["Cost is undefined.", "Shared concern."],
+                "critic": ["Loophole exists.", "Shared concern."],
+            }[profile.id]
+            return DebateTurn(
+                agent_id=profile.id,
+                position=f"{profile.id} position",
+                claims=[f"{profile.id} claim"],
+                concerns=concerns,
+            )
+
+    session = DebateSession(runtime=ConcernedRuntime())
+    profiles = [
+        AgentProfile(id="expander", name="Expander", role="Expand", objective="Expand consequences"),
+        AgentProfile(id="critic", name="Critic", role="Challenge", objective="Find gaps"),
+    ]
+    task = AgentTask(instruction="Debate the setting", required_output="Return a DebateTurn")
+
+    result = await session.run(profiles, task)
+
+    assert result.unresolved_tensions == ["Cost is undefined.", "Shared concern.", "Loophole exists."]
+
+
+@pytest.mark.asyncio
 async def test_debate_session_requires_at_least_one_agent():
     session = DebateSession(runtime=FakeRuntime())
     task = AgentTask(instruction="Debate the setting", required_output="Return a DebateTurn")

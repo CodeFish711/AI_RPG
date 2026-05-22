@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Iterable, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -38,5 +38,18 @@ class DebateSession:
         for profile in profiles:
             turns.append(await self.runtime.run_agent(profile, task, DebateTurn))
 
-        return DebateSessionResult(turns=turns)
+        return DebateSessionResult(
+            turns=turns,
+            unresolved_tensions=_dedupe(concern for turn in turns for concern in turn.concerns),
+        )
+
+
+def _dedupe(items: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            ordered.append(item)
+    return ordered
 
