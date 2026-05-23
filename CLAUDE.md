@@ -63,8 +63,11 @@ The system is a validate-then-commit pipeline. Agents only propose; `core/` deci
 - `schemas.py` — generic primitives: `Message`, `LLMRequest/Response`, `ThinkingPolicy`
   (`disabled|auto|enabled`), `MemoryFragment`, `RAGQueryResult`, `TickEvent`, `SimulationNode`.
 - `rag_repository.py` — `UniversalRAGRepository` Protocol with two implementations:
-  `InMemoryRAGRepository` (cosine over term counts) and `ChromaRAGRepository` (persistent,
-  uses a deterministic hashed-text embedding, not a learned model).
+  `InMemoryRAGRepository` and `ChromaRAGRepository` (persistent). Both take an injected
+  `EmbeddingModel`; default is `HashedTextEmbedding` (deterministic, zero-dependency,
+  word-bucket vectors). `SentenceTransformerEmbedding` (default model
+  `all-MiniLM-L6-v2`, requires the `[rag]` extras for `sentence-transformers`) is the
+  semantic upgrade per spec §8.
 - `agents/runtime.py` — `AgentRuntime.run_agent(profile, task, schema)` builds the
   system/user messages from an `AgentProfile` + `AgentTask` and delegates to the gateway.
 - `agents/debate.py` — `DebateSession` runs each profile once, collects `DebateTurn`s, and
