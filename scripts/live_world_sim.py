@@ -7,7 +7,11 @@ from core.config import AppSettings
 from core.rag_repository import InMemoryRAGRepository
 from game.world_sim.tick_workflow import WorldTickWorkflow
 from main import build_runtime_from_settings, run_world_init_mvp
-from scripts.live_world_init import DEFAULT_LIVE_ANSWER
+from scripts.live_world_init import (
+    DEFAULT_LIVE_ANSWER,
+    add_embedding_argument,
+    build_embedding_model,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -17,6 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--live", action="store_true", help="Actually call the external LLM provider.")
     parser.add_argument("--answer", default=DEFAULT_LIVE_ANSWER, help="Player answer for the world-building question.")
     parser.add_argument("--ticks", type=int, default=4, help="Maximum number of simulation ticks to run.")
+    add_embedding_argument(parser)
     return parser
 
 
@@ -30,7 +35,9 @@ async def async_main() -> None:
     ensure_live_enabled(args)
 
     runtime = build_runtime_from_settings(AppSettings())
-    repository = InMemoryRAGRepository()
+    embedding_model = build_embedding_model(args.embedding)
+    repository = InMemoryRAGRepository(embedding_model=embedding_model)
+    print(f"Embedding: {args.embedding} (dim={embedding_model.dimensions})")
 
     init = await run_world_init_mvp(answer_text=args.answer, runtime=runtime, repository=repository)
     world_seed = init.workflow_result.world_seed
