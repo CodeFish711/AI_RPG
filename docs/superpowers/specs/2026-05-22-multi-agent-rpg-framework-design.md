@@ -692,6 +692,42 @@ class NodeTickOutcome(BaseModel):
 **v0 故意推后**：真语义 embedding（先用 metadata 路由）、DAG 生成管线、
 常驻 Runtime Entity Agent、语义缓存、熔断。
 
+### 16.2 Tick Loop v1（节点连续性与相关性检索）
+
+v0 跑通后的第一次打磨。两处耦合改动，让世界从"一格一格独立反应"变成
+"持续演化"。
+
+**节点跨 tick 连续性**
+
+每次节点回合提交后，`WorldTickWorkflow` 把 outcome 写回节点自身：
+
+- `node.last_tick` 更新为当前 tick。
+- `node.metadata["recent_narratives"]`：追加本次叙事，按 `history_window`
+  截取最近 N 条（默认 3）。
+- `node.metadata["change_log"]`：追加本次 `proposed_changes` 的 summary，
+  截取最近 2N 条。
+
+节点再次被唤醒时，自己的近期历史会以 `node.model_dump()` 的形式直接进入 prompt
+context —— 不依赖 RAG 检索能不能命中。这是节点级"自我延续"的最简实现，
+仍然满足铁律 2（agent 提议、core 提交）。
+
+**相关性检索**
+
+v0 把 `world_seed_id` 下所有 fragment 全量倒给节点。v1 改成两段拼接：
+
+- **Canon 段**（始终带）：`metadata_filter={"kind": "world_law", "world_seed_id": ...}`
+  拿到所有世界法则。法则是世界的不变约束，每次推演都要看见。
+- **相关性段**（top_k 排序）：用 `node.node_type / node.id / event.event_type /
+  payload.target_hint / payload.impact_summary` 拼成 query，按 `retrieval_top_k`
+  （默认 6）取相关 fragment。
+
+两段按 fragment id 去重后给到 prompt。即使在词面 embedding 下，非空 query 也能
+按词重叠产出合理排序；接入真语义 embedding 后只需替换 repository 实现，workflow
+不变。
+
+**仍然推后到下一里程碑**：真语义 embedding、按节点维度的细粒度路由（例如
+"只看该节点自身历史"）、节点状态的结构化更新（当前只追加叙事文本）。
+
 ## 17. 动态 Runtime Entity Agent
 
 Runtime Entity Agent 不是常驻进程，而是需要时临时组装的 prompt。

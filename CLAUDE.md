@@ -81,11 +81,13 @@ Synthesizer → `WorldSeedCandidate` → Canon Guard (`accept`/`revise`/`reject`
 re-synthesizes up to `max_revisions` times, `reject` raises) → `WorldSeed` → Causality
 Analyzer → `CausalImpactPacket`.
 
-`game/world_sim/` — Tick Loop v0 (see spec §16.1). `tick_workflow.py`
+`game/world_sim/` — Tick Loop (see spec §16.1–16.2). `tick_workflow.py`
 `WorldTickWorkflow.run()` bootstraps a `TickBus` from a `CausalImpactPacket` (each impact
 → a `SimulationNode` + a scheduled event), then loops: `advance` → wake node → retrieve
-RAG context by `world_seed_id` metadata → reason (`NodeTickOutcome`) → commit fragment +
-reschedule `new_impacts`. Stops at `max_ticks` or when the queue empties.
+RAG context (canon laws always + top_k relevance-ranked by event/node query) → reason
+(`NodeTickOutcome`) → commit fragment + write outcome back into the node's
+`recent_narratives` / `change_log` / `last_tick` for cross-tick continuity + reschedule
+`new_impacts`. Stops at `max_ticks` or when the queue empties.
 
 Both packages follow the same shape: `agents.py` profiles, `prompts.py` tasks,
 `schemas.py` domain schemas, `memory.py` deterministic object → `MemoryFragment` conversion.

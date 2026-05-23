@@ -3,8 +3,9 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from core.agents.schemas import AgentProfile, AgentTask
+from core.agents.schemas import AgentProfile, AgentTask, ProposedChange
 from core.rag_repository import InMemoryRAGRepository
+from core.schemas import MemoryFragment
 from game.world_init.schemas import CausalImpact, CausalImpactPacket
 from game.world_sim.schemas import NodeTickOutcome
 from game.world_sim.tick_workflow import WorldTickWorkflow
@@ -119,3 +120,112 @@ async def test_run_stops_early_when_event_queue_empties():
 
     assert result.final_tick == 1
     assert len(result.records) == 1
+
+
+class RecordingRuntime:
+    """Captures the retrieved_memory passed to each prompt and returns a plain outcome."""
+
+    def __init__(self, *, loop_on_same_node: bool = False):
+        self.calls = 0
+        self.retrieved_memory_per_call: list[list[dict]] = []
+        self.loop_on_same_node = loop_on_same_node
+
+    async def run_agent(self, profile: AgentProfile, task: AgentTask, output_schema: type[BaseModel]) -> BaseModel:
+        self.calls += 1
+        self.retrieved_memory_per_call.append(task.context["retrieved_memory"])
+        node_id = task.context["node"]["id"]
+        proposed = [
+            ProposedChange(change_type="state", summary=f"State change {self.calls}", confidence=0.6)
+        ]
+        new_impacts = []
+        if self.loop_on_same_node and self.calls == 1:
+            new_impacts = [_impact("north", delay=0)]  # same hint -> same node
+        return NodeTickOutcome(
+            node_id=node_id,
+            tick=task.context["node"]["last_tick"] + 1,
+            narrative=f"Narrative {self.calls}",
+            proposed_changes=proposed,
+            new_impacts=new_impacts,
+        )
+
+
+@pytest.mark.asyncio
+async def test_node_metadata_accumulates_narratives_and_advances_last_tick():
+    runtime = RecordingRuntime(loop_on_same_node=True)
+    workflow = WorldTickWorkflow(runtime=runtime, repository=InMemoryRAGRepository())
+
+    await workflow.run(_packet(_impact("north", delay=0)), "seed-1")
+
+    node = workflow.bus.get_node("region:north")
+    assert node.last_tick == workflow.bus.current_tick
+    assert node.metadata["recent_narratives"] == ["Narrative 1", "Narrative 2"]
+    assert node.metadata["change_log"] == ["State change 1", "State change 2"]
+
+
+@pytest.mark.asyncio
+async def test_history_window_caps_recent_narratives():
+    class AlwaysSameNodeRuntime(RecordingRuntime):
+        async def run_agent(self, profile, task, output_schema):
+            outcome = await super().run_agent(profile, task, output_schema)
+            return outcome.model_copy(update={"new_impacts": [_impact("north", delay=0)]})
+
+    runtime = AlwaysSameNodeRuntime()
+    workflow = WorldTickWorkflow(
+        runtime=runtime, repository=InMemoryRAGRepository(), max_ticks=5, history_window=2
+    )
+
+    await workflow.run(_packet(_impact("north", delay=0)), "seed-1")
+
+    node = workflow.bus.get_node("region:north")
+    assert node.metadata["recent_narratives"] == ["Narrative 4", "Narrative 5"]
+
+
+@pytest.mark.asyncio
+async def test_retrieval_always_includes_world_laws_from_canon():
+    repository = InMemoryRAGRepository()
+    repository.upsert(
+        MemoryFragment(
+            id="law-1",
+            content="World law Memory Price: every act consumes a true memory.",
+            metadata={"kind": "world_law", "world_seed_id": "seed-1"},
+        )
+    )
+    runtime = RecordingRuntime()
+    workflow = WorldTickWorkflow(runtime=runtime, repository=repository)
+
+    await workflow.run(_packet(_impact("north", delay=0)), "seed-1")
+
+    retrieved_ids = [fragment["id"] for fragment in runtime.retrieved_memory_per_call[0]]
+    assert "law-1" in retrieved_ids
+
+
+@pytest.mark.asyncio
+async def test_retrieval_ranks_relevant_outcomes_above_unrelated_ones():
+    repository = InMemoryRAGRepository()
+    repository.upsert(
+        MemoryFragment(
+            id="related",
+            content="A previous tick: northern villages faced migration pressure.",
+            metadata={"kind": "tick_outcome", "world_seed_id": "seed-1"},
+        )
+    )
+    repository.upsert(
+        MemoryFragment(
+            id="unrelated",
+            content="Maritime trade flourished in southern ports.",
+            metadata={"kind": "tick_outcome", "world_seed_id": "seed-1"},
+        )
+    )
+    runtime = RecordingRuntime()
+    workflow = WorldTickWorkflow(
+        runtime=runtime, repository=repository, retrieval_top_k=1
+    )
+
+    await workflow.run(
+        _packet(_impact("northern villages", delay=0)),
+        "seed-1",
+    )
+
+    retrieved_ids = [fragment["id"] for fragment in runtime.retrieved_memory_per_call[0]]
+    assert "related" in retrieved_ids
+    assert "unrelated" not in retrieved_ids
