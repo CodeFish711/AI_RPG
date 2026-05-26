@@ -113,3 +113,52 @@ def test_world_memory_upsert_many_returns_all_ids():
     ids = wm.upsert_many(records)
     assert len(ids) == 3
     assert ids == [r.id for r in records]
+
+
+def test_world_memory_user_metadata_cannot_override_system_kind():
+    """Regression: ensure user-supplied metadata doesn't shadow system fields."""
+    from core.rag_repository import InMemoryRAGRepository
+    from core.world_memory import MemoryQuery, MemoryRecord, WorldMemory
+
+    wm = WorldMemory(repository=InMemoryRAGRepository())
+    wm.upsert(
+        MemoryRecord(
+            kind="world_law",
+            content="x",
+            source="t",
+            session_id="s",
+            metadata={"kind": "MALICIOUS", "session_id": "OTHER"},
+        )
+    )
+
+    # 用户的 "kind" / "session_id" 不能覆盖 system 字段;否则下面的 query 会查不到
+    results = wm.query(MemoryQuery(query_text="x", session_id="s", kinds=["world_law"], top_k=5))
+    assert len(results) == 1
+    assert results[0].fragment.metadata["kind"] == "world_law"
+    assert results[0].fragment.metadata["session_id"] == "s"
+
+
+def test_world_memory_find_similar_returns_record_when_above_threshold():
+    from core.rag_repository import InMemoryRAGRepository
+    from core.world_memory import MemoryRecord, WorldMemory
+
+    wm = WorldMemory(repository=InMemoryRAGRepository())
+    wm.upsert(MemoryRecord(kind="k", content="alpha beta gamma", source="t", session_id="s"))
+
+    # InMemoryRAGRepository: identical content → cosine 1.0,远超 default threshold 0.92
+    found = wm.find_similar("alpha beta gamma", session_id="s")
+    assert found is not None
+    assert found.content == "alpha beta gamma"
+    assert found.kind == "k"
+
+
+def test_world_memory_find_similar_returns_none_when_below_threshold():
+    from core.rag_repository import InMemoryRAGRepository
+    from core.world_memory import MemoryRecord, WorldMemory
+
+    wm = WorldMemory(repository=InMemoryRAGRepository())
+    wm.upsert(MemoryRecord(kind="k", content="alpha beta", source="t", session_id="s"))
+
+    # 完全不相关的 query → cosine 0.0,远低于 default threshold 0.92
+    found = wm.find_similar("completely unrelated stuff", session_id="s")
+    assert found is None

@@ -92,13 +92,13 @@ class WorldMemory:
             id=record.id,
             content=record.content,
             metadata={
+                **record.metadata,
                 "kind": record.kind,
                 "source": record.source,
                 "session_id": record.session_id,
                 "confidence": record.confidence,
                 "created_at": record.created_at.isoformat(),
                 "record_id": record.id,
-                **record.metadata,
             },
         )
 
