@@ -162,3 +162,21 @@ def test_world_memory_find_similar_returns_none_when_below_threshold():
     # 完全不相关的 query → cosine 0.0,远低于 default threshold 0.92
     found = wm.find_similar("completely unrelated stuff", session_id="s")
     assert found is None
+
+
+def test_memory_record_rejects_path_traversal_session_id():
+    from core.world_memory import MemoryRecord
+
+    with pytest.raises(ValidationError):
+        MemoryRecord(kind="k", content="x", source="s", session_id="../etc")
+    with pytest.raises(ValidationError):
+        MemoryRecord(kind="k", content="x", source="s", session_id="a/b")
+
+
+def test_memory_query_rejects_path_traversal_session_id():
+    from core.world_memory import MemoryQuery
+
+    with pytest.raises(ValidationError):
+        MemoryQuery(query_text="q", session_id="../etc")
+    with pytest.raises(ValidationError):
+        MemoryQuery(query_text="q", session_id="a/b")

@@ -48,7 +48,7 @@ class TurnInput(BaseModel):
     raw_text: str = Field(min_length=1)
     intent_hint: str | None = None
     turn_index: int = Field(ge=0)
-    session_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_\-]+$")
 
 
 class TurnResult(BaseModel):

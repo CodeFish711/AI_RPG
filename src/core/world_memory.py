@@ -15,7 +15,7 @@ class MemoryRecord(BaseModel):
     kind: str = Field(min_length=1)
     content: str = Field(min_length=1)
     source: str = Field(min_length=1)
-    session_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_\-]+$")
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -23,7 +23,7 @@ class MemoryRecord(BaseModel):
 
 class MemoryQuery(BaseModel):
     query_text: str = Field(min_length=1)
-    session_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_\-]+$")
     kinds: list[str] | None = None
     top_k: int = Field(default=8, ge=1, le=50)
     min_score: float = Field(default=0.0, ge=0.0, le=1.0)

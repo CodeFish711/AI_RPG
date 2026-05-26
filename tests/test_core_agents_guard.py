@@ -1,5 +1,5 @@
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 
 def test_guard_finding_requires_known_severity():

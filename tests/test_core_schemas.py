@@ -49,3 +49,14 @@ def test_turn_result_defaults_guard_retries_to_zero():
 def test_turn_result_rejects_negative_guard_retries():
     with pytest.raises(ValidationError):
         TurnResult(turn_id="t1", response_text="ok", guard_retries=-1)
+
+
+def test_turn_input_rejects_path_traversal_session_id():
+    from core.schemas import TurnInput
+
+    with pytest.raises(ValidationError):
+        TurnInput(raw_text="x", turn_index=0, session_id="../etc/passwd")
+    with pytest.raises(ValidationError):
+        TurnInput(raw_text="x", turn_index=0, session_id="s1/s2")
+    with pytest.raises(ValidationError):
+        TurnInput(raw_text="x", turn_index=0, session_id="s 1")  # 空格也禁
