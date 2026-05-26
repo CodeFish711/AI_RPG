@@ -40,23 +40,39 @@ class GuardInput(BaseModel):
     session_id: str = Field(min_length=1, pattern=SESSION_ID_PATTERN)
 
 
-_GUARD_INSTRUCTION = (
-    "你是 Canon Guard。判断'提案'是否违反'参考材料',返回 GuardDecision JSON。"
-    "accept = 一致放行;revise = 可修复小矛盾,必须给 revised_payload;"
-    "reject = 不可修复矛盾(违反法则/复活死人/凭空物品)。"
+# 通用 default instruction:不含任何游戏域措辞(原 "Canon Guard / 复活死人 /
+# 凭空物品" 已剔除)。game 层可通过 ConsistencyGuard(instruction=...) 注入
+# 自己的 game-specific prompt template。
+DEFAULT_GUARD_INSTRUCTION = (
+    "你是一致性裁决 agent。根据'参考材料'与'硬性规则'判定'提案'是否合规,"
+    "返回 GuardDecision JSON。"
+    "accept = 提案与参考一致放行;"
+    "revise = 提案存在可修复的小矛盾,必须给出 revised_payload(修订后的完整提案);"
+    "reject = 提案存在不可修复的矛盾。"
 )
 
 
 class ConsistencyGuard:
-    """通用 Guard:把 GuardInput 装进 AgentTask,调 AgentRuntime,返回 GuardDecision。"""
+    """通用 Guard:把 GuardInput 装进 AgentTask,调 AgentRuntime,返回 GuardDecision。
 
-    def __init__(self, *, runtime: AgentRuntime, profile: AgentProfile) -> None:
+    `instruction` 参数允许 game 层注入 game-specific prompt template,
+    None 时用 DEFAULT_GUARD_INSTRUCTION。
+    """
+
+    def __init__(
+        self,
+        *,
+        runtime: AgentRuntime,
+        profile: AgentProfile,
+        instruction: str | None = None,
+    ) -> None:
         self.runtime = runtime
         self.profile = profile
+        self.instruction = instruction if instruction is not None else DEFAULT_GUARD_INSTRUCTION
 
     async def check(self, guard_input: GuardInput) -> GuardDecision:
         task = AgentTask(
-            instruction=_GUARD_INSTRUCTION,
+            instruction=self.instruction,
             context=guard_input.model_dump(mode="json"),
             required_output="GuardDecision",
         )

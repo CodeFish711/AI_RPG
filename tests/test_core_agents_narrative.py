@@ -98,3 +98,59 @@ def test_narrative_context_extra_accepts_nested_dict():
     dumped = ctx.model_dump(mode="json")
     assert dumped["extra"]["scene"]["location"] == "forest"
     assert dumped["extra"]["scene"]["characters"] == ["Aria"]
+
+
+@pytest.mark.asyncio
+async def test_narrative_agent_uses_default_instruction_when_not_overridden():
+    from core.agents.narrative import NarrativeAgent, NarrativeContext
+    from core.agents.runtime import AgentRuntime
+    from core.agents.schemas import AgentProfile
+    from core.schemas import TurnInput
+    from tests._fakes import FakeStructuredGateway
+
+    gateway = FakeStructuredGateway()
+    gateway.queue_response(_DemoBeat, _DemoBeat(narration="ok"))
+
+    profile = AgentProfile(id="n", name="N", role="r", objective="o")
+    agent = NarrativeAgent(runtime=AgentRuntime(gateway=gateway), profile=profile)
+    await agent.run(
+        context=NarrativeContext(
+            player_input=TurnInput(raw_text="x", turn_index=0, session_id="s"),
+            retrieved_memory=[],
+        ),
+        output_schema=_DemoBeat,
+    )
+
+    user_msg = gateway.invocations[0].messages[1]
+    # default instruction 中含 "叙事" 字样
+    assert "叙事" in user_msg.content
+
+
+@pytest.mark.asyncio
+async def test_narrative_agent_uses_instruction_override_when_provided():
+    from core.agents.narrative import NarrativeAgent, NarrativeContext
+    from core.agents.runtime import AgentRuntime
+    from core.agents.schemas import AgentProfile
+    from core.schemas import TurnInput
+    from tests._fakes import FakeStructuredGateway
+
+    gateway = FakeStructuredGateway()
+    gateway.queue_response(_DemoBeat, _DemoBeat(narration="ok"))
+
+    profile = AgentProfile(id="n", name="N", role="r", objective="o")
+    custom = "GAME_NARRATIVE_TEMPLATE_xyz999"
+    agent = NarrativeAgent(
+        runtime=AgentRuntime(gateway=gateway),
+        profile=profile,
+        instruction=custom,
+    )
+    await agent.run(
+        context=NarrativeContext(
+            player_input=TurnInput(raw_text="x", turn_index=0, session_id="s"),
+            retrieved_memory=[],
+        ),
+        output_schema=_DemoBeat,
+    )
+
+    user_msg = gateway.invocations[0].messages[1]
+    assert "GAME_NARRATIVE_TEMPLATE_xyz999" in user_msg.content
