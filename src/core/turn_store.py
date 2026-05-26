@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -8,18 +7,10 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from core._validators import is_valid_session_id, validate_session_id
 from core.agents.guard import GuardDecision
 from core.schemas import RAGQueryResult, TurnInput
 from core.world_memory import MemoryRecord
-
-
-_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
-
-
-def _validate_session_id(session_id: str) -> None:
-    """防御性入口校验。Pydantic 已挡构造时不合法的 session_id,这里挡函数参数式注入。"""
-    if not _SESSION_ID_RE.match(session_id):
-        raise ValueError(f"invalid session_id: {session_id!r}")
 
 
 class Turn(BaseModel):
@@ -60,7 +51,7 @@ class TurnStore:
             f.write(line + "\n")
 
     def load_session(self, *, session_id: str) -> list[Turn]:
-        _validate_session_id(session_id)
+        validate_session_id(session_id)
         path = self._path_for(session_id)
         if not path.exists():
             return []
@@ -73,13 +64,15 @@ class TurnStore:
         return turns
 
     def load_recent(self, *, session_id: str, n: int) -> list[Turn]:
-        _validate_session_id(session_id)
+        validate_session_id(session_id)
         if n <= 0:
             return []
         all_turns = self.load_session(session_id=session_id)
         return all_turns[-n:]
 
     def _path_for(self, session_id: str) -> Path:
-        # _path_for 是私有,但仍做防御性 assert(避免未来内部代码绕过外层校验)
-        assert _SESSION_ID_RE.match(session_id), f"_path_for: invalid session_id {session_id!r}"
+        # 内部不变量:_path_for 是私有的,假定调用方已校验。用 RuntimeError 而非 assert,
+        # 保证 python -O 下仍触发(assert 在 -O 时被 strip)。
+        if not is_valid_session_id(session_id):
+            raise RuntimeError(f"_path_for: invalid session_id {session_id!r}")
         return self.data_dir / f"{session_id}.jsonl"

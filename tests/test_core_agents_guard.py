@@ -107,3 +107,19 @@ def test_guard_input_rejects_path_traversal_session_id():
         GuardInput(proposal={}, session_id="a/b")
     with pytest.raises(ValidationError):
         GuardInput(proposal={}, session_id="a b")
+
+
+def test_guard_input_accepts_session_id_with_underscores_and_hyphens():
+    from core.agents.guard import GuardInput
+
+    # 显式正向用例:含 _ / - / 数字 / 字母混合,验证 pattern 接受
+    gi = GuardInput(proposal={}, session_id="s_1-a-B-9")
+    assert gi.session_id == "s_1-a-B-9"
+
+
+def test_guard_input_rejects_trailing_newline_session_id():
+    from core.agents.guard import GuardInput
+
+    # \A...\Z pattern 应该拒绝 trailing newline(原 ^...$ 在 default mode 会接受)
+    with pytest.raises(ValidationError):
+        GuardInput(proposal={}, session_id="abc\n")

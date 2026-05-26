@@ -4,6 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from core._validators import SESSION_ID_PATTERN
 from core.agents.runtime import AgentRuntime
 from core.agents.schemas import AgentProfile, AgentTask
 
@@ -36,7 +37,7 @@ class GuardInput(BaseModel):
     proposal: dict[str, Any]
     references: list[ReferenceItem] = Field(default_factory=list)
     rules: list[str] = Field(default_factory=list)
-    session_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_\-]+$")
+    session_id: str = Field(min_length=1, pattern=SESSION_ID_PATTERN)
 
 
 _GUARD_INSTRUCTION = (

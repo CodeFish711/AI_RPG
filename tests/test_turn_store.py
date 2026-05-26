@@ -157,3 +157,11 @@ def test_turn_store_save_accepts_valid_session_id(tmp_path: Path):
     store.save(Turn(input=TurnInput(raw_text="x", turn_index=1, session_id="abc-123")))
     assert (tmp_path / "abc_123.jsonl").exists()
     assert (tmp_path / "abc-123.jsonl").exists()
+
+
+def test_turn_store_load_session_rejects_trailing_newline_session_id(tmp_path: Path):
+    from core.turn_store import TurnStore
+
+    store = TurnStore(data_dir=tmp_path)
+    with pytest.raises(ValueError, match="invalid session_id"):
+        store.load_session(session_id="abc\n")

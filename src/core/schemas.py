@@ -5,6 +5,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from core._validators import SESSION_ID_PATTERN
+
 
 class Message(BaseModel):
     role: Literal["system", "user", "assistant"]
@@ -48,4 +50,4 @@ class TurnInput(BaseModel):
     raw_text: str = Field(min_length=1)
     intent_hint: str | None = None
     turn_index: int = Field(ge=0)
-    session_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_\-]+$")
+    session_id: str = Field(min_length=1, pattern=SESSION_ID_PATTERN)
