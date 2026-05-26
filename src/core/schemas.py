@@ -45,20 +45,16 @@ class RAGQueryResult(BaseModel):
     score: float
 
 
-class TickEvent(BaseModel):
-    id: str = Field(default_factory=lambda: uuid4().hex)
-    tick_id: str | None = None
-    event_type: str = Field(min_length=1)
-    source_id: str = Field(min_length=1)
-    target_ids: list[str] = Field(default_factory=list)
-    payload: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+class TurnInput(BaseModel):
+    raw_text: str = Field(min_length=1)
+    intent_hint: str | None = None
+    turn_index: int = Field(ge=0)
+    session_id: str = Field(min_length=1)
 
 
-class SimulationNode(BaseModel):
-    id: str = Field(min_length=1)
-    node_type: str = Field(min_length=1)
-    active: bool = True
-    last_tick: int = Field(default=0, ge=0)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
+class TurnResult(BaseModel):
+    # Turn 类放在 core.turn_store(Task 5),避免循环引用。
+    # TurnResult 在 Phase A 只声明字段;run_turn 方法签名 in Phase B 才完整使用。
+    turn_id: str = Field(min_length=1)
+    response_text: str = Field(min_length=1)
+    guard_retries: int = Field(default=0, ge=0)
