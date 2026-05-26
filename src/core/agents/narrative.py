@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -21,7 +21,7 @@ _NARRATIVE_INSTRUCTION = (
 class NarrativeContext(BaseModel):
     player_input: TurnInput
     retrieved_memory: list[RAGQueryResult] = Field(default_factory=list)
-    extra: dict[str, object] = Field(default_factory=dict)
+    extra: dict[str, Any] = Field(default_factory=dict)
 
 
 class NarrativeAgent:

@@ -84,3 +84,17 @@ async def test_narrative_agent_passes_through_output_schema_choice():
     )
     assert isinstance(result, _AltBeat)
     assert result.line == "hi"
+
+
+def test_narrative_context_extra_accepts_nested_dict():
+    from core.agents.narrative import NarrativeContext
+    from core.schemas import TurnInput
+
+    ctx = NarrativeContext(
+        player_input=TurnInput(raw_text="x", turn_index=0, session_id="s1"),
+        retrieved_memory=[],
+        extra={"scene": {"location": "forest", "characters": ["Aria"]}},
+    )
+    dumped = ctx.model_dump(mode="json")
+    assert dumped["extra"]["scene"]["location"] == "forest"
+    assert dumped["extra"]["scene"]["characters"] == ["Aria"]

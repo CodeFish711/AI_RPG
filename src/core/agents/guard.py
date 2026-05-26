@@ -36,7 +36,7 @@ class GuardInput(BaseModel):
     proposal: dict[str, Any]
     references: list[ReferenceItem] = Field(default_factory=list)
     rules: list[str] = Field(default_factory=list)
-    session_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_\-]+$")
 
 
 _GUARD_INSTRUCTION = (

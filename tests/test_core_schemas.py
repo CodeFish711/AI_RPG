@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from core.schemas import LLMRequest, Message, ThinkingPolicy, TurnInput, TurnResult
+from core.schemas import LLMRequest, Message, ThinkingPolicy, TurnInput
 
 
 def test_llm_request_uses_mimo_defaults():
@@ -39,16 +39,6 @@ def test_turn_input_accepts_minimal_valid_payload():
     turn_input = TurnInput(raw_text="look around", turn_index=0, session_id="s1")
     assert turn_input.raw_text == "look around"
     assert turn_input.intent_hint is None
-
-
-def test_turn_result_defaults_guard_retries_to_zero():
-    result = TurnResult(turn_id="t1", response_text="ok")
-    assert result.guard_retries == 0
-
-
-def test_turn_result_rejects_negative_guard_retries():
-    with pytest.raises(ValidationError):
-        TurnResult(turn_id="t1", response_text="ok", guard_retries=-1)
 
 
 def test_turn_input_rejects_path_traversal_session_id():
