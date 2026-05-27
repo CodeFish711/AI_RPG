@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from core.agents.guard import (
     ConsistencyGuard,
+    GuardDecision,
     GuardInput,
     ReferenceItem,
 )
@@ -54,9 +55,9 @@ class TurnLoop:
         self.config = config
 
     async def run_turn(self, *, session_id: str, raw_text: str) -> TurnResult:
-        # ① 构造 TurnInput(turn_index = 已存 turn 数)
+        # ① 构造 TurnInput;turn_index 只数 status=="ok" 的 turn(degraded/failed 不前进)
         existing = self.turn_store.load_session(session_id=session_id)
-        turn_index = len(existing)
+        turn_index = sum(1 for t in existing if t.status == "ok")
         input = TurnInput(
             raw_text=raw_text,
             turn_index=turn_index,
@@ -90,29 +91,69 @@ class TurnLoop:
             session_id=session_id,
         ))
 
-        # Task 4 阶段只处理 accept;Task 5 / 6 实现其他分支
-        if decision.decision != "accept":
-            raise NotImplementedError(
-                f"TurnLoop Task 4 only handles accept; got {decision.decision}. "
-                "revise/reject 分支将在 Task 5/6 实现。"
+        guard_retries = 0
+        if decision.decision == "accept":
+            final_payload = proposal
+        elif decision.decision == "revise":
+            # revise: 直接采用 revised_payload(不重跑 Narrate)
+            # GuardDecision model_validator 已强制 revise 必有 revised_payload,理论不可能为 None
+            assert decision.revised_payload is not None
+            final_payload = decision.revised_payload
+            guard_retries = 1
+        else:
+            # reject: 走降级
+            return self._build_degraded_result(
+                input=input,
+                retrieved=retrieved,
+                proposal=proposal,
+                decision=decision,
             )
 
         # ⑤ Curate(Phase B 暂不沉淀,留 Phase D MemoryCurator)
-        curated = []
+        curated: list = []
 
         # ⑥ Persist + ⑦ Return
-        response_text = self._extract_response_text_from_payload(proposal)
+        response_text = self._extract_response_text_from_payload(final_payload)
         turn = Turn(
             input=input,
             retrieved_memory=retrieved,
-            narrative_draft=proposal,
+            narrative_draft=final_payload,
             guard_decision=decision,
             curated_records=curated,
             response_text=response_text,
             status="ok",
         )
         self.turn_store.save(turn)
-        return TurnResult(turn=turn, response_text=response_text, guard_retries=0)
+        return TurnResult(turn=turn, response_text=response_text, guard_retries=guard_retries)
+
+    def _build_degraded_result(
+        self,
+        *,
+        input: TurnInput,
+        retrieved: list[RAGQueryResult],
+        proposal: dict[str, Any],
+        decision: GuardDecision,
+    ) -> TurnResult:
+        """Guard reject → 安全降级。存盘但不沉淀 curate,status=degraded,
+        response_text=固定文案,turn_index 在下次 run_turn 中不计入(因只数 status==ok)。"""
+        degradation_text = self.config.degradation_text
+        turn = Turn(
+            input=input,
+            retrieved_memory=retrieved,
+            narrative_draft=proposal,
+            guard_decision=decision,
+            curated_records=[],  # 降级不沉淀
+            response_text=degradation_text,
+            status="degraded",
+            metadata={
+                "guard_rejection": {
+                    "decision": decision.decision,
+                    "findings": [f.model_dump() for f in decision.findings],
+                },
+            },
+        )
+        self.turn_store.save(turn)
+        return TurnResult(turn=turn, response_text=degradation_text, guard_retries=0)
 
     def _build_references(
         self,
