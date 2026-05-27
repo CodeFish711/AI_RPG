@@ -1,12 +1,13 @@
 """TurnLoop 主路径 spec §6.1 时序。
 
-已实现:accept / revise / reject 三分支(Task 4-5)。
-留 Task 6:circuit-open 降级 + TurnTelemetry 记录。
+已实现:accept / revise / reject 三分支(Task 4-5)+ circuit-open 降级
+(Task 6)+ TurnTelemetry 记录(Task 6)。
 留 Phase C:_build_references 完整顺序(spec §7.B)+ recent turns 摘要。
 """
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -18,9 +19,22 @@ from core.agents.guard import (
     ReferenceItem,
 )
 from core.agents.narrative import NarrativeAgent, NarrativeContext
+from core.llm_gateway import GatewayCircuitOpen
 from core.schemas import RAGQueryResult, TurnInput
 from core.turn_store import Turn, TurnResult, TurnStore
 from core.world_memory import MemoryQuery, WorldMemory
+
+
+class TurnTelemetry(BaseModel):
+    """每轮 TurnLoop 的可观测性指标(spec §7.F)。写入 turn.metadata["telemetry"]。"""
+
+    retrieval_hit_count: int = Field(ge=0)
+    retrieval_top_score: float = Field(ge=0.0)
+    guard_decision: str  # "accept" / "revise" / "reject" / "circuit_open"
+    guard_findings_count: int = Field(ge=0)
+    guard_retries: int = Field(ge=0)
+    llm_call_count: int = Field(ge=0)
+    duration_ms: int = Field(ge=0)
 
 
 class TurnLoopConfig(BaseModel):
@@ -63,7 +77,10 @@ class TurnLoop:
         self.config = config
 
     async def run_turn(self, *, session_id: str, raw_text: str) -> TurnResult:
-        # ① 构造 TurnInput;turn_index 只数 status=="ok" 的 turn(degraded/failed 不前进)
+        start_ns = time.monotonic_ns()
+        llm_call_count = 0
+
+        # ① 构造 TurnInput(turn_index 只数 status=="ok",degraded/failed 不前进)
         existing = self.turn_store.load_session(session_id=session_id)
         turn_index = sum(1 for t in existing if t.status == "ok")
         input = TurnInput(
@@ -79,25 +96,51 @@ class TurnLoop:
             kinds=self.config.retrieval_kinds or None,
             top_k=self.config.retrieval_top_k,
         ))
+        retrieval_hit_count = len(retrieved)
+        retrieval_top_score = retrieved[0].score if retrieved else 0.0
 
-        # ③ Narrate
-        narrative_beat = await self.narrative_agent.run(
-            context=NarrativeContext(
-                player_input=input,
-                retrieved_memory=retrieved,
-            ),
-            output_schema=self.config.narrative_output_schema,
-        )
+        # ③ Narrate(可能抛 GatewayCircuitOpen)
+        try:
+            narrative_beat = await self.narrative_agent.run(
+                context=NarrativeContext(
+                    player_input=input,
+                    retrieved_memory=retrieved,
+                ),
+                output_schema=self.config.narrative_output_schema,
+            )
+            llm_call_count += 1
+        except GatewayCircuitOpen:
+            return self._build_circuit_open_result(
+                input=input,
+                retrieved=retrieved,
+                start_ns=start_ns,
+                llm_call_count=llm_call_count,
+                retrieval_hit_count=retrieval_hit_count,
+                retrieval_top_score=retrieval_top_score,
+            )
+
         proposal = narrative_beat.model_dump(mode="json")
 
-        # ④ Guard
+        # ④ Guard(可能抛 GatewayCircuitOpen)
         references = self._build_references(retrieved, existing)
-        decision = await self.guard.check(GuardInput(
-            proposal=proposal,
-            references=references,
-            rules=self.config.guard_rules,
-            session_id=session_id,
-        ))
+        try:
+            decision = await self.guard.check(GuardInput(
+                proposal=proposal,
+                references=references,
+                rules=self.config.guard_rules,
+                session_id=session_id,
+            ))
+            llm_call_count += 1
+        except GatewayCircuitOpen:
+            return self._build_circuit_open_result(
+                input=input,
+                retrieved=retrieved,
+                start_ns=start_ns,
+                llm_call_count=llm_call_count,
+                retrieval_hit_count=retrieval_hit_count,
+                retrieval_top_score=retrieval_top_score,
+                partial_proposal=proposal,
+            )
 
         guard_retries = 0
         if decision.decision == "accept":
@@ -120,21 +163,32 @@ class TurnLoop:
                 retrieved=retrieved,
                 proposal=proposal,
                 decision=decision,
+                start_ns=start_ns,
+                llm_call_count=llm_call_count,
+                retrieval_hit_count=retrieval_hit_count,
+                retrieval_top_score=retrieval_top_score,
             )
 
-        # ⑤ Curate(Phase B 暂不沉淀,留 Phase D MemoryCurator)
-        curated: list = []
-
-        # ⑥ Persist + ⑦ Return
+        # ⑤-⑦ 正常路径(accept / revise)
         response_text = self._extract_response_text_from_payload(final_payload)
+        telemetry = TurnTelemetry(
+            retrieval_hit_count=retrieval_hit_count,
+            retrieval_top_score=retrieval_top_score,
+            guard_decision=decision.decision,
+            guard_findings_count=len(decision.findings),
+            guard_retries=guard_retries,
+            llm_call_count=llm_call_count,
+            duration_ms=_elapsed_ms(start_ns),
+        )
         turn = Turn(
             input=input,
             retrieved_memory=retrieved,
             narrative_draft=final_payload,
             guard_decision=decision,
-            curated_records=curated,
+            curated_records=[],  # Phase B 不沉淀,Phase D MemoryCurator 接
             response_text=response_text,
             status="ok",
+            metadata={"telemetry": telemetry.model_dump()},
         )
         self.turn_store.save(turn)
         return TurnResult(turn=turn, response_text=response_text, guard_retries=guard_retries)
@@ -146,35 +200,84 @@ class TurnLoop:
         retrieved: list[RAGQueryResult],
         proposal: dict[str, Any],
         decision: GuardDecision,
+        start_ns: int,
+        llm_call_count: int,
+        retrieval_hit_count: int,
+        retrieval_top_score: float,
     ) -> TurnResult:
-        """Guard reject → 安全降级。存盘但不沉淀 curate,status=degraded,
-        response_text=固定文案,turn_index 在下次 run_turn 中不计入(因只数 status==ok)。"""
-        degradation_text = self.config.degradation_text
+        """Guard reject → 安全降级。存盘但不沉淀 curate,status=degraded。"""
+        telemetry = TurnTelemetry(
+            retrieval_hit_count=retrieval_hit_count,
+            retrieval_top_score=retrieval_top_score,
+            guard_decision=decision.decision,
+            guard_findings_count=len(decision.findings),
+            guard_retries=0,
+            llm_call_count=llm_call_count,
+            duration_ms=_elapsed_ms(start_ns),
+        )
         turn = Turn(
             input=input,
             retrieved_memory=retrieved,
             narrative_draft=proposal,
             guard_decision=decision,
-            curated_records=[],  # 降级不沉淀
-            response_text=degradation_text,
+            curated_records=[],
+            response_text=self.config.degradation_text,
             status="degraded",
             metadata={
                 "guard_rejection": {
                     "decision": decision.decision,
                     "findings": [f.model_dump() for f in decision.findings],
                 },
+                "telemetry": telemetry.model_dump(),
             },
         )
         self.turn_store.save(turn)
-        return TurnResult(turn=turn, response_text=degradation_text, guard_retries=0)
+        return TurnResult(turn=turn, response_text=self.config.degradation_text, guard_retries=0)
+
+    def _build_circuit_open_result(
+        self,
+        *,
+        input: TurnInput,
+        retrieved: list[RAGQueryResult],
+        start_ns: int,
+        llm_call_count: int,
+        retrieval_hit_count: int,
+        retrieval_top_score: float,
+        partial_proposal: dict[str, Any] | None = None,
+    ) -> TurnResult:
+        """LLM Gateway circuit open → 系统级降级。status=failed,与 reject(degraded)区分。"""
+        telemetry = TurnTelemetry(
+            retrieval_hit_count=retrieval_hit_count,
+            retrieval_top_score=retrieval_top_score,
+            guard_decision="circuit_open",
+            guard_findings_count=0,
+            guard_retries=0,
+            llm_call_count=llm_call_count,
+            duration_ms=_elapsed_ms(start_ns),
+        )
+        turn = Turn(
+            input=input,
+            retrieved_memory=retrieved,
+            narrative_draft=partial_proposal,
+            guard_decision=None,
+            curated_records=[],
+            response_text=self.config.degradation_text,
+            status="failed",
+            metadata={
+                "circuit_open": True,
+                "telemetry": telemetry.model_dump(),
+            },
+        )
+        self.turn_store.save(turn)
+        return TurnResult(turn=turn, response_text=self.config.degradation_text, guard_retries=0)
 
     def _build_references(
         self,
         retrieved: list[RAGQueryResult],
         recent_turns: list[Turn],
     ) -> list[ReferenceItem]:
-        """组装 GuardInput.references。Task 4 简化版:把 retrieved_memory 转 ReferenceItem。
-        Task 5+ 会补"最近 N 轮 turn"。spec §7.B 完整顺序留 Phase C。"""
+        """组装 GuardInput.references。Phase B 简化版:只 retrieved_memory → ReferenceItem。
+        Phase C 实现完整 §7.B 顺序(rules > world_law > recent_turns > characters > events)。"""
         refs: list[ReferenceItem] = []
         for r in retrieved:
             refs.append(ReferenceItem(
@@ -185,7 +288,7 @@ class TurnLoop:
         return refs
 
     def _extract_response_text_from_payload(self, payload: dict[str, Any]) -> str:
-        """从 narrative payload(可能是原 beat,也可能是 revised_payload)取 response_text。"""
+        """从 narrative payload(原 beat 或 revised_payload)取 response_text。"""
         value = payload.get(self.config.response_text_field)
         if not isinstance(value, str) or not value:
             raise ValueError(
@@ -193,3 +296,7 @@ class TurnLoop:
                 f"got {type(value).__name__}: {value!r}"
             )
         return value
+
+
+def _elapsed_ms(start_ns: int) -> int:
+    return max(0, (time.monotonic_ns() - start_ns) // 1_000_000)

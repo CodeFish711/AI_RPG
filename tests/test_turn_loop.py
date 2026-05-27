@@ -242,3 +242,76 @@ async def test_turn_loop_reject_does_not_advance_turn_index(tmp_path: Path):
     saved = store.load_session(session_id="sess_nx")
     assert len(saved) == 2
     assert all(t.status == "degraded" for t in saved)
+
+
+@pytest.mark.asyncio
+async def test_turn_loop_circuit_open_degrades_as_failed(tmp_path: Path):
+    """LLM Gateway 抛 GatewayCircuitOpen → 降级 status=failed,不向上抛。"""
+    from core.llm_gateway import GatewayCircuitOpen
+    from core.turn_loop import TurnLoop, TurnLoopConfig
+
+    class _CircuitOpenGateway:
+        def __init__(self):
+            self.invocations = []
+
+        async def complete_and_parse(self, request, output_schema):
+            self.invocations.append(request)
+            raise GatewayCircuitOpen("circuit open")
+
+    gateway = _CircuitOpenGateway()
+    narrative, guard, wm, store = _build_components(gateway=gateway, tmp_path=tmp_path)
+    loop = TurnLoop(
+        narrative_agent=narrative,
+        guard=guard,
+        world_memory=wm,
+        turn_store=store,
+        config=TurnLoopConfig(
+            narrative_output_schema=_Beat,
+            response_text_field="narration",
+            retrieval_kinds=[],
+            guard_rules=[],
+        ),
+    )
+    result = await loop.run_turn(session_id="sess_co", raw_text="test")
+
+    assert result.turn.status == "failed"
+    assert result.response_text  # 非空 — degradation_text
+    assert result.turn.metadata.get("circuit_open") is True
+
+
+@pytest.mark.asyncio
+async def test_turn_loop_records_telemetry_to_turn_metadata(tmp_path: Path):
+    """每轮记录 TurnTelemetry 到 turn.metadata["telemetry"]。"""
+    from core.turn_loop import TurnLoop, TurnLoopConfig
+    from core.world_memory import MemoryRecord
+
+    gateway = FakeStructuredGateway()
+    gateway.queue_response(_Beat, _Beat(narration="ok"))
+    gateway.queue_response(GuardDecision, GuardDecision(decision="accept", findings=[]))
+
+    narrative, guard, wm, store = _build_components(gateway=gateway, tmp_path=tmp_path)
+    # 预先写入,使 retrieval_hit_count > 0
+    wm.upsert(MemoryRecord(kind="world_law", content="foo", source="s", session_id="sess_t"))
+
+    loop = TurnLoop(
+        narrative_agent=narrative,
+        guard=guard,
+        world_memory=wm,
+        turn_store=store,
+        config=TurnLoopConfig(
+            narrative_output_schema=_Beat,
+            response_text_field="narration",
+            retrieval_kinds=["world_law"],
+            guard_rules=[],
+        ),
+    )
+    result = await loop.run_turn(session_id="sess_t", raw_text="foo")
+
+    telemetry = result.turn.metadata.get("telemetry")
+    assert telemetry is not None
+    assert telemetry["retrieval_hit_count"] >= 1
+    assert telemetry["guard_decision"] == "accept"
+    assert telemetry["guard_findings_count"] == 0
+    assert telemetry["guard_retries"] == 0
+    assert telemetry["llm_call_count"] == 2  # Narrate + Guard
+    assert telemetry["duration_ms"] >= 0
