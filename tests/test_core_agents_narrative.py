@@ -102,7 +102,11 @@ def test_narrative_context_extra_accepts_nested_dict():
 
 @pytest.mark.asyncio
 async def test_narrative_agent_uses_default_instruction_when_not_overridden():
-    from core.agents.narrative import NarrativeAgent, NarrativeContext
+    from core.agents.narrative import (
+        DEFAULT_NARRATIVE_INSTRUCTION,
+        NarrativeAgent,
+        NarrativeContext,
+    )
     from core.agents.runtime import AgentRuntime
     from core.agents.schemas import AgentProfile
     from core.schemas import TurnInput
@@ -122,8 +126,8 @@ async def test_narrative_agent_uses_default_instruction_when_not_overridden():
     )
 
     user_msg = gateway.invocations[0].messages[1]
-    # default instruction 中含 "叙事" 字样
-    assert "叙事" in user_msg.content
+    # 锁定 verbatim 常量:DEFAULT 字符串原样进 prompt
+    assert DEFAULT_NARRATIVE_INSTRUCTION in user_msg.content
 
 
 @pytest.mark.asyncio

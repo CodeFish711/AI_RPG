@@ -127,7 +127,12 @@ def test_guard_input_rejects_trailing_newline_session_id():
 
 @pytest.mark.asyncio
 async def test_consistency_guard_uses_default_instruction_when_not_overridden():
-    from core.agents.guard import ConsistencyGuard, GuardDecision, GuardInput
+    from core.agents.guard import (
+        DEFAULT_GUARD_INSTRUCTION,
+        ConsistencyGuard,
+        GuardDecision,
+        GuardInput,
+    )
     from core.agents.runtime import AgentRuntime
     from core.agents.schemas import AgentProfile
     from tests._fakes import FakeStructuredGateway
@@ -140,8 +145,8 @@ async def test_consistency_guard_uses_default_instruction_when_not_overridden():
     await guard.check(GuardInput(proposal={}, session_id="s"))
 
     user_msg = gateway.invocations[0].messages[1]
-    # default instruction 中应该含通用 "一致" 字样(或其他 default 关键词)
-    assert "一致" in user_msg.content or "accept" in user_msg.content
+    # 锁定 verbatim 常量:DEFAULT 字符串原样进 prompt
+    assert DEFAULT_GUARD_INSTRUCTION in user_msg.content
 
 
 @pytest.mark.asyncio
