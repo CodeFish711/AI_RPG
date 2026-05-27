@@ -3,7 +3,7 @@ revise / reject / circuit-open 留 Task 5 / 6。"""
 
 from __future__ import annotations
 
-from typing import Any, TypeVar
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -16,9 +16,6 @@ from core.agents.narrative import NarrativeAgent, NarrativeContext
 from core.schemas import RAGQueryResult, TurnInput
 from core.turn_store import Turn, TurnResult, TurnStore
 from core.world_memory import MemoryQuery, WorldMemory
-
-
-T = TypeVar("T", bound=BaseModel)
 
 
 class TurnLoopConfig(BaseModel):

@@ -8,7 +8,7 @@ from core.agents.narrative import NarrativeAgent
 from core.agents.runtime import AgentRuntime
 from core.agents.schemas import AgentProfile
 from core.rag_repository import InMemoryRAGRepository
-from core.turn_store import Turn, TurnStore
+from core.turn_store import TurnStore
 from core.world_memory import WorldMemory
 from tests._fakes import FakeStructuredGateway
 
