@@ -1,5 +1,9 @@
-"""TurnLoop 主路径 spec §6.1 时序。本 task 只实现 accept 分支;
-revise / reject / circuit-open 留 Task 5 / 6。"""
+"""TurnLoop 主路径 spec §6.1 时序。
+
+已实现:accept / revise / reject 三分支(Task 4-5)。
+留 Task 6:circuit-open 降级 + TurnTelemetry 记录。
+留 Phase C:_build_references 完整顺序(spec §7.B)+ recent turns 摘要。
+"""
 
 from __future__ import annotations
 
@@ -37,7 +41,11 @@ class TurnLoopConfig(BaseModel):
 
 
 class TurnLoop:
-    """spec §6.1 主路径编排器。本 Phase B Task 4 阶段只实现 accept happy path。"""
+    """spec §6.1 主路径编排器。
+
+    Phase B Task 4-5 实现 accept / revise / reject 三分支。
+    Task 6 加 circuit-open 降级与 TurnTelemetry。
+    """
 
     def __init__(
         self,
@@ -96,8 +104,13 @@ class TurnLoop:
             final_payload = proposal
         elif decision.decision == "revise":
             # revise: 直接采用 revised_payload(不重跑 Narrate)
-            # GuardDecision model_validator 已强制 revise 必有 revised_payload,理论不可能为 None
-            assert decision.revised_payload is not None
+            # GuardDecision model_validator 已强制 revise 必有 revised_payload,理论不可能为 None。
+            # 用 RuntimeError 而非 assert,保证 python -O 下也触发(与 turn_store._path_for 一致 convention)。
+            if decision.revised_payload is None:
+                raise RuntimeError(
+                    "GuardDecision.decision=='revise' but revised_payload is None; "
+                    "model_validator should have prevented this — possible schema regression"
+                )
             final_payload = decision.revised_payload
             guard_retries = 1
         else:
