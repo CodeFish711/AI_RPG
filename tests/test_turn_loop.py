@@ -274,9 +274,64 @@ async def test_turn_loop_circuit_open_degrades_as_failed(tmp_path: Path):
     )
     result = await loop.run_turn(session_id="sess_co", raw_text="test")
 
+    # 基本断言
     assert result.turn.status == "failed"
     assert result.response_text  # 非空 — degradation_text
     assert result.turn.metadata.get("circuit_open") is True
+
+    # Narrate 第一次就抛 → narrative_draft 应为 None,llm_call_count == 0
+    assert result.turn.narrative_draft is None
+    telemetry = result.turn.metadata["telemetry"]
+    assert telemetry["guard_decision"] == "circuit_open"
+    assert telemetry["llm_call_count"] == 0
+    assert telemetry["guard_findings_count"] == 0
+    assert telemetry["guard_retries"] == 0
+
+
+@pytest.mark.asyncio
+async def test_turn_loop_circuit_open_at_guard_stage_keeps_partial_proposal(tmp_path: Path):
+    """Guard 阶段(而非 Narrate 阶段)抛 GatewayCircuitOpen → narrative_draft 保留 partial,llm_call_count=1。"""
+    from core.llm_gateway import GatewayCircuitOpen
+    from core.turn_loop import TurnLoop, TurnLoopConfig
+
+    class _PartialFailGateway:
+        """第 1 次(Narrate)成功返回 _Beat,第 2 次(Guard)抛 GatewayCircuitOpen。"""
+        def __init__(self):
+            self.invocations = []
+            self._call_count = 0
+
+        async def complete_and_parse(self, request, output_schema):
+            self.invocations.append(request)
+            self._call_count += 1
+            if self._call_count == 1:
+                return _Beat(narration="partial narrative")
+            raise GatewayCircuitOpen("circuit open during guard")
+
+    gateway = _PartialFailGateway()
+    narrative, guard, wm, store = _build_components(gateway=gateway, tmp_path=tmp_path)
+    loop = TurnLoop(
+        narrative_agent=narrative,
+        guard=guard,
+        world_memory=wm,
+        turn_store=store,
+        config=TurnLoopConfig(
+            narrative_output_schema=_Beat,
+            response_text_field="narration",
+            retrieval_kinds=[],
+            guard_rules=[],
+        ),
+    )
+    result = await loop.run_turn(session_id="sess_co2", raw_text="test")
+
+    assert result.turn.status == "failed"
+    assert result.turn.metadata.get("circuit_open") is True
+    # Narrate 成功 → narrative_draft 保留(非 None)
+    assert result.turn.narrative_draft is not None
+    assert result.turn.narrative_draft.get("narration") == "partial narrative"
+    # llm_call_count == 1(Narrate 成功 + Guard 失败前 +1)
+    telemetry = result.turn.metadata["telemetry"]
+    assert telemetry["llm_call_count"] == 1
+    assert telemetry["guard_decision"] == "circuit_open"
 
 
 @pytest.mark.asyncio

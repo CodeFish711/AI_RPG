@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -30,7 +30,7 @@ class TurnTelemetry(BaseModel):
 
     retrieval_hit_count: int = Field(ge=0)
     retrieval_top_score: float = Field(ge=0.0)
-    guard_decision: str  # "accept" / "revise" / "reject" / "circuit_open"
+    guard_decision: Literal["accept", "revise", "reject", "circuit_open"]
     guard_findings_count: int = Field(ge=0)
     guard_retries: int = Field(ge=0)
     llm_call_count: int = Field(ge=0)
@@ -205,7 +205,11 @@ class TurnLoop:
         retrieval_hit_count: int,
         retrieval_top_score: float,
     ) -> TurnResult:
-        """Guard reject → 安全降级。存盘但不沉淀 curate,status=degraded。"""
+        """Guard reject → 安全降级。存盘但不沉淀 curate,status=degraded。
+
+        turn_index 由 run_turn ① 通过 `status=='ok'` 计数,degraded turn 不前进 —
+        下次同 session 的 run_turn 将复用相同的 turn_index。
+        """
         telemetry = TurnTelemetry(
             retrieval_hit_count=retrieval_hit_count,
             retrieval_top_score=retrieval_top_score,
@@ -245,7 +249,11 @@ class TurnLoop:
         retrieval_top_score: float,
         partial_proposal: dict[str, Any] | None = None,
     ) -> TurnResult:
-        """LLM Gateway circuit open → 系统级降级。status=failed,与 reject(degraded)区分。"""
+        """LLM Gateway circuit open → 系统级降级。status=failed,与 reject(degraded)区分。
+
+        turn_index 由 run_turn ① 通过 `status=='ok'` 计数,failed turn 不前进 —
+        下次同 session 的 run_turn 将复用相同的 turn_index。
+        """
         telemetry = TurnTelemetry(
             retrieval_hit_count=retrieval_hit_count,
             retrieval_top_score=retrieval_top_score,
