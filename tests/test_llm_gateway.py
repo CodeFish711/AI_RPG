@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 import httpx
+import pytest
 from pydantic import BaseModel
 
 from core.llm_gateway import LLMGateway
@@ -105,4 +106,127 @@ def test_complete_retries_empty_reasoning_response_with_larger_budget():
     assert response.content == "finished"
     assert len(seen_payloads) == 2
     assert seen_payloads[1]["max_tokens"] == 2048
+
+
+# === Phase B Task 3: Circuit Breaker ===
+
+
+def _circuit_fail_transport() -> httpx.MockTransport:
+    """Always returns HTTP 503,模拟 provider 故障。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"error": "service unavailable"})
+
+    return httpx.MockTransport(handler)
+
+
+def _circuit_success_transport(content: str = '{"answer": "ok"}') -> httpx.MockTransport:
+    """Always returns 200 OK with given content。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
+                "usage": {"completion_tokens": 5},
+            },
+        )
+
+    return httpx.MockTransport(handler)
+
+
+@pytest.mark.asyncio
+async def test_gateway_circuit_opens_after_threshold_consecutive_failures():
+    """连续 5 次失败 → 第 6 次调用直接抛 GatewayCircuitOpen,不再发请求。"""
+    from core.llm_gateway import GatewayCircuitOpen, LLMGateway, LLMGatewayError
+
+    gateway = LLMGateway(
+        api_key="test",
+        max_retries=0,
+        failure_threshold=5,
+        circuit_window_seconds=900,
+        transport=_circuit_fail_transport(),
+    )
+    request = LLMRequest(messages=[Message(role="user", content="ping")])
+
+    # 前 5 次都失败(LLMGatewayError),还未熔断
+    for _ in range(5):
+        with pytest.raises(LLMGatewayError) as exc_info:
+            await gateway.complete(request)
+        assert not isinstance(exc_info.value, GatewayCircuitOpen)
+
+    # 第 6 次:熔断已打开,直接抛 GatewayCircuitOpen
+    with pytest.raises(GatewayCircuitOpen):
+        await gateway.complete(request)
+
+
+@pytest.mark.asyncio
+async def test_gateway_circuit_resets_consecutive_failures_after_success():
+    """成功一次 → reset consecutive_failures counter。"""
+    from core.llm_gateway import LLMGateway, LLMGatewayError
+
+    gateway = LLMGateway(
+        api_key="test",
+        max_retries=0,
+        failure_threshold=5,
+        circuit_window_seconds=900,
+        transport=_circuit_fail_transport(),
+    )
+    request = LLMRequest(messages=[Message(role="user", content="ping")])
+    for _ in range(4):
+        with pytest.raises(LLMGatewayError):
+            await gateway.complete(request)
+    assert gateway.consecutive_failures == 4
+
+    # 切换 transport 到 success
+    gateway._transport = _circuit_success_transport()
+    response = await gateway.complete(request)
+    assert response.content
+    # 成功后 counter 必须 reset
+    assert gateway.consecutive_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_gateway_circuit_closes_after_window_expires():
+    """熔断打开后,window 时间过去 → 下次调用恢复尝试。"""
+    from datetime import UTC, datetime, timedelta
+
+    from core.llm_gateway import GatewayCircuitOpen, LLMGateway, LLMGatewayError
+
+    gateway = LLMGateway(
+        api_key="test",
+        max_retries=0,
+        failure_threshold=2,
+        circuit_window_seconds=60,
+        transport=_circuit_fail_transport(),
+    )
+    request = LLMRequest(messages=[Message(role="user", content="ping")])
+
+    # 触发熔断(2 次失败到阈值)
+    for _ in range(2):
+        with pytest.raises(LLMGatewayError):
+            await gateway.complete(request)
+    # 第 3 次确认熔断已打开
+    with pytest.raises(GatewayCircuitOpen):
+        await gateway.complete(request)
+
+    # 把 circuit_open_until 手动倒回过去(模拟时间流逝 > window)
+    gateway.circuit_open_until = datetime.now(UTC) - timedelta(seconds=1)
+
+    # 下次调用应该尝试请求(虽然 transport 仍 fail,但不会立即 GatewayCircuitOpen)
+    with pytest.raises(LLMGatewayError) as exc_info:
+        await gateway.complete(request)
+    assert not isinstance(exc_info.value, GatewayCircuitOpen)
+
+
+@pytest.mark.asyncio
+async def test_gateway_circuit_default_threshold_and_window():
+    """默认值检查:failure_threshold=5, circuit_window_seconds=900。"""
+    from core.llm_gateway import LLMGateway
+
+    gateway = LLMGateway(api_key="test")
+    assert gateway.failure_threshold == 5
+    assert gateway.circuit_window_seconds == 900
+    assert gateway.consecutive_failures == 0
+    assert gateway.circuit_open_until is None
 

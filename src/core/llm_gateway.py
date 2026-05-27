@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar
 
 import httpx
@@ -21,6 +22,10 @@ class GatewaySchemaError(LLMGatewayError):
     """Raised when model output cannot be coerced into the requested schema."""
 
 
+class GatewayCircuitOpen(LLMGatewayError):
+    """Raised when circuit breaker is open due to consecutive failures."""
+
+
 class LLMGateway:
     def __init__(
         self,
@@ -32,6 +37,8 @@ class LLMGateway:
         timeout: float = 60.0,
         min_tokens_for_thinking: int = 1024,
         default_thinking: ThinkingPolicy | None = None,
+        failure_threshold: int = 5,
+        circuit_window_seconds: int = 900,
         transport: httpx.AsyncBaseTransport | None = None,
     ):
         self.api_key = api_key
@@ -41,9 +48,24 @@ class LLMGateway:
         self.timeout = timeout
         self.min_tokens_for_thinking = min_tokens_for_thinking
         self.default_thinking = default_thinking or ThinkingPolicy(type="auto")
+        self.failure_threshold = failure_threshold
+        self.circuit_window_seconds = circuit_window_seconds
+        self.consecutive_failures = 0
+        self.circuit_open_until: datetime | None = None
         self._transport = transport
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
+        # 熔断检查:circuit 开着且未到 window 结束 → 直接抛
+        if self.circuit_open_until is not None:
+            now = datetime.now(UTC)
+            if now < self.circuit_open_until:
+                raise GatewayCircuitOpen(
+                    f"circuit breaker open until {self.circuit_open_until.isoformat()}"
+                )
+            # window 已过,关闭熔断,重置 counter,继续尝试
+            self.circuit_open_until = None
+            self.consecutive_failures = 0
+
         current = self._with_default_model(request)
         last_error: Exception | None = None
 
@@ -54,15 +76,27 @@ class LLMGateway:
                 last_error = exc
                 if attempt < self.max_retries:
                     continue
+                # 最终失败,累积 counter 并可能开熔断
+                self._record_failure()
                 raise LLMGatewayError(f"LLM provider request failed: {exc}") from exc
 
             if self._needs_more_completion_budget(response) and attempt < self.max_retries:
                 current = current.model_copy(update={"max_tokens": max(current.max_tokens * 2, self.min_tokens_for_thinking * 2)})
                 continue
 
+            # 成功:reset counter
+            self.consecutive_failures = 0
+            self.circuit_open_until = None
             return response
 
+        # 不该走到这里
+        self._record_failure()
         raise LLMGatewayError(f"LLM provider request failed: {last_error}")
+
+    def _record_failure(self) -> None:
+        self.consecutive_failures += 1
+        if self.consecutive_failures >= self.failure_threshold:
+            self.circuit_open_until = datetime.now(UTC) + timedelta(seconds=self.circuit_window_seconds)
 
     async def complete_and_parse(self, request: LLMRequest, output_schema: type[T]) -> T:
         current = request
@@ -184,4 +218,3 @@ class LLMGateway:
         details = response.usage.get("completion_tokens_details") or {}
         reasoning_tokens = int(details.get("reasoning_tokens") or 0)
         return response.content.strip() == "" and response.finish_reason == "length" and reasoning_tokens > 0
-
