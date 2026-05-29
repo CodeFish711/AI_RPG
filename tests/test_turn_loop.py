@@ -370,3 +370,107 @@ async def test_turn_loop_records_telemetry_to_turn_metadata(tmp_path: Path):
     assert telemetry["guard_retries"] == 0
     assert telemetry["llm_call_count"] == 2  # Narrate + Guard
     assert telemetry["duration_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_turn_loop_build_references_orders_by_priority_kinds(tmp_path: Path):
+    """references_priority_kinds 决定 kind 类记忆的输出顺序。"""
+    from core.turn_loop import TurnLoop, TurnLoopConfig
+    from core.world_memory import MemoryRecord
+
+    gateway = FakeStructuredGateway()
+    gateway.queue_response(_Beat, _Beat(narration="ok"))
+    gateway.queue_response(GuardDecision, GuardDecision(decision="accept", findings=[]))
+
+    narrative, guard, wm, store = _build_components(gateway=gateway, tmp_path=tmp_path)
+    # 写入 3 个 kind 的记忆,query 含 "shared" 让全部召回
+    wm.upsert(MemoryRecord(kind="world_law", content="shared world law text", source="s", session_id="sess_pri"))
+    wm.upsert(MemoryRecord(kind="character", content="shared character text", source="s", session_id="sess_pri"))
+    wm.upsert(MemoryRecord(kind="event", content="shared event text", source="s", session_id="sess_pri"))
+
+    loop = TurnLoop(
+        narrative_agent=narrative,
+        guard=guard,
+        world_memory=wm,
+        turn_store=store,
+        config=TurnLoopConfig(
+            narrative_output_schema=_Beat,
+            response_text_field="narration",
+            retrieval_kinds=["world_law", "character", "event"],
+            references_priority_kinds=["world_law", "character", "event"],
+            guard_rules=[],
+        ),
+    )
+    await loop.run_turn(session_id="sess_pri", raw_text="shared query")
+
+    # Guard 收到的 user message 含 references JSON,按 priority 顺序出现
+    guard_msg = gateway.invocations[1].messages[1]
+    world_law_idx = guard_msg.content.find("shared world law text")
+    character_idx = guard_msg.content.find("shared character text")
+    event_idx = guard_msg.content.find("shared event text")
+    assert 0 <= world_law_idx < character_idx < event_idx, (
+        f"references 顺序错: world_law@{world_law_idx} character@{character_idx} event@{event_idx}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_turn_loop_build_references_includes_recent_turns_summary(tmp_path: Path):
+    """recent_turns 摘要应进入 Guard references(label='recent_turn:N')。"""
+    from core.turn_loop import TurnLoop, TurnLoopConfig
+
+    gateway = FakeStructuredGateway()
+    for i in range(2):
+        gateway.queue_response(_Beat, _Beat(narration=f"narration_{i}_unique_token"))
+        gateway.queue_response(GuardDecision, GuardDecision(decision="accept", findings=[]))
+
+    narrative, guard, wm, store = _build_components(gateway=gateway, tmp_path=tmp_path)
+    loop = TurnLoop(
+        narrative_agent=narrative,
+        guard=guard,
+        world_memory=wm,
+        turn_store=store,
+        config=TurnLoopConfig(
+            narrative_output_schema=_Beat,
+            response_text_field="narration",
+            retrieval_kinds=[],
+            references_priority_kinds=[],
+            guard_rules=[],
+            recent_turns_count=3,
+        ),
+    )
+
+    await loop.run_turn(session_id="sess_recent", raw_text="action 0")
+    await loop.run_turn(session_id="sess_recent", raw_text="action 1")
+
+    # 第 2 轮 Guard 应见到第 1 轮的 raw_text 或 response_text
+    second_guard_msg = gateway.invocations[3].messages[1]
+    assert "action 0" in second_guard_msg.content or "narration_0_unique_token" in second_guard_msg.content
+
+
+@pytest.mark.asyncio
+async def test_turn_loop_build_references_first_turn_has_no_recent_turns(tmp_path: Path):
+    """第 1 轮 references 不含 'recent_turn:' label。"""
+    from core.turn_loop import TurnLoop, TurnLoopConfig
+
+    gateway = FakeStructuredGateway()
+    gateway.queue_response(_Beat, _Beat(narration="ok"))
+    gateway.queue_response(GuardDecision, GuardDecision(decision="accept", findings=[]))
+
+    narrative, guard, wm, store = _build_components(gateway=gateway, tmp_path=tmp_path)
+    loop = TurnLoop(
+        narrative_agent=narrative,
+        guard=guard,
+        world_memory=wm,
+        turn_store=store,
+        config=TurnLoopConfig(
+            narrative_output_schema=_Beat,
+            response_text_field="narration",
+            retrieval_kinds=[],
+            references_priority_kinds=[],
+            guard_rules=[],
+        ),
+    )
+    await loop.run_turn(session_id="sess_first", raw_text="first turn")
+
+    guard_msg = gateway.invocations[1].messages[1]
+    assert "recent_turn:" not in guard_msg.content

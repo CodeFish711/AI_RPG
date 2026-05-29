@@ -45,6 +45,7 @@ class TurnLoopConfig(BaseModel):
     narrative_output_schema: type[BaseModel]
     response_text_field: str = "narration"
     retrieval_kinds: list[str] = Field(default_factory=list)
+    references_priority_kinds: list[str] = Field(default_factory=list)
     guard_rules: list[str] = Field(default_factory=list)
     recent_turns_count: int = Field(default=3, ge=0, le=10)
     retrieval_top_k: int = Field(default=8, ge=1, le=50)
@@ -284,16 +285,78 @@ class TurnLoop:
         retrieved: list[RAGQueryResult],
         recent_turns: list[Turn],
     ) -> list[ReferenceItem]:
-        """组装 GuardInput.references。Phase B 简化版:只 retrieved_memory → ReferenceItem。
-        Phase C 实现完整 §7.B 顺序(rules > world_law > recent_turns > characters > events)。"""
+        """spec §7.B references 装配。顺序:
+        1. 第一 priority kind(典型:world_law,top all)
+        2. recent_turns 摘要(最近 N 个 status=ok turn)
+        3. 后续 priority kinds(典型:character / event,按 config 顺序)
+        4. 其他 kind 兜底(retrieved 中剩余,避免漏 player_state / relation 等)
+
+        kind 字符串完全由 config.references_priority_kinds 注入,
+        core/ 不硬编码任何 game 域 kind 名(import-graph 守护)。
+        """
         refs: list[ReferenceItem] = []
+
+        by_kind: dict[str, list[RAGQueryResult]] = {}
         for r in retrieved:
-            refs.append(ReferenceItem(
-                label=r.fragment.metadata.get("kind", "memory"),
-                content=r.fragment.content,
-                score=r.score,
-            ))
+            kind = r.fragment.metadata.get("kind", "memory")
+            by_kind.setdefault(kind, []).append(r)
+
+        seen_kinds: set[str] = set()
+        priority = self.config.references_priority_kinds
+
+        # 第 1 个 priority kind(典型 world_law)
+        if priority:
+            first_kind = priority[0]
+            for r in by_kind.get(first_kind, []):
+                refs.append(ReferenceItem(
+                    label=first_kind,
+                    content=r.fragment.content,
+                    score=r.score,
+                ))
+            seen_kinds.add(first_kind)
+
+        # recent_turns 摘要(只 status=ok)
+        recent_ok = [t for t in recent_turns if t.status == "ok"]
+        for turn in recent_ok[-self.config.recent_turns_count:]:
+            summary = self._summarize_turn_for_reference(turn)
+            if summary:
+                refs.append(ReferenceItem(
+                    label=f"recent_turn:{turn.input.turn_index}",
+                    content=summary,
+                    score=None,
+                ))
+
+        # 后续 priority kinds
+        for kind in priority[1:]:
+            for r in by_kind.get(kind, []):
+                refs.append(ReferenceItem(
+                    label=kind,
+                    content=r.fragment.content,
+                    score=r.score,
+                ))
+            seen_kinds.add(kind)
+
+        # 其他 kind 兜底(保留 player_state / relation / location 等)
+        for kind, items in by_kind.items():
+            if kind in seen_kinds:
+                continue
+            for r in items:
+                refs.append(ReferenceItem(
+                    label=kind,
+                    content=r.fragment.content,
+                    score=r.score,
+                ))
+
         return refs
+
+    @staticmethod
+    def _summarize_turn_for_reference(turn: Turn) -> str:
+        """把一个 Turn 摘要成 Guard reference 用的短文本。
+        含玩家输入 + 当时的 response_text(若有)。"""
+        parts: list[str] = [f"player: {turn.input.raw_text}"]
+        if turn.response_text:
+            parts.append(f"response: {turn.response_text}")
+        return " | ".join(parts)
 
     def _extract_response_text_from_payload(self, payload: dict[str, Any]) -> str:
         """从 narrative payload(原 beat 或 revised_payload)取 response_text。"""
