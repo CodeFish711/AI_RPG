@@ -70,6 +70,13 @@ class TurnStore:
         all_turns = self.load_session(session_id=session_id)
         return all_turns[-n:]
 
+    def list_sessions(self) -> list[str]:
+        """返回 data_dir 下所有 jsonl session_id,按 mtime 倒序(最新优先)。
+        忽略非 jsonl 文件(.DS_Store / .md / .txt 等)。"""
+        jsonl_files = [p for p in self.data_dir.iterdir() if p.is_file() and p.suffix == ".jsonl"]
+        jsonl_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return [p.stem for p in jsonl_files]
+
     def _path_for(self, session_id: str) -> Path:
         # 内部不变量:_path_for 是私有的,假定调用方已校验。用 RuntimeError 而非 assert,
         # 保证 python -O 下仍触发(assert 在 -O 时被 strip)。

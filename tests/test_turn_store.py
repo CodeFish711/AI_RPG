@@ -165,3 +165,55 @@ def test_turn_store_load_session_rejects_trailing_newline_session_id(tmp_path: P
     store = TurnStore(data_dir=tmp_path)
     with pytest.raises(ValueError, match="invalid session_id"):
         store.load_session(session_id="abc\n")
+
+
+def test_turn_store_list_sessions_empty_dir_returns_empty(tmp_path: Path):
+    from core.turn_store import TurnStore
+
+    store = TurnStore(data_dir=tmp_path)
+    assert store.list_sessions() == []
+
+
+def test_turn_store_list_sessions_returns_session_ids_without_extension(tmp_path: Path):
+    from core.schemas import TurnInput
+    from core.turn_store import Turn, TurnStore
+
+    store = TurnStore(data_dir=tmp_path)
+    store.save(Turn(input=TurnInput(raw_text="x", turn_index=0, session_id="alpha")))
+    store.save(Turn(input=TurnInput(raw_text="x", turn_index=0, session_id="beta")))
+
+    sessions = store.list_sessions()
+    assert set(sessions) == {"alpha", "beta"}
+
+
+def test_turn_store_list_sessions_orders_by_mtime_desc(tmp_path: Path):
+    """最新写入的 session 排在前面(便于 --resume 默认挑最近的)。"""
+    import time
+
+    from core.schemas import TurnInput
+    from core.turn_store import Turn, TurnStore
+
+    store = TurnStore(data_dir=tmp_path)
+    store.save(Turn(input=TurnInput(raw_text="x", turn_index=0, session_id="oldest")))
+    time.sleep(0.01)
+    store.save(Turn(input=TurnInput(raw_text="x", turn_index=0, session_id="middle")))
+    time.sleep(0.01)
+    store.save(Turn(input=TurnInput(raw_text="x", turn_index=0, session_id="newest")))
+
+    sessions = store.list_sessions()
+    assert sessions == ["newest", "middle", "oldest"]
+
+
+def test_turn_store_list_sessions_ignores_non_jsonl_files(tmp_path: Path):
+    from core.schemas import TurnInput
+    from core.turn_store import Turn, TurnStore
+
+    store = TurnStore(data_dir=tmp_path)
+    store.save(Turn(input=TurnInput(raw_text="x", turn_index=0, session_id="real")))
+
+    (tmp_path / "random.txt").write_text("noise")
+    (tmp_path / "notes.md").write_text("notes")
+    (tmp_path / ".DS_Store").write_text("mac junk")
+
+    sessions = store.list_sessions()
+    assert sessions == ["real"]
