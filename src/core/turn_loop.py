@@ -316,15 +316,17 @@ class TurnLoop:
             seen_kinds.add(first_kind)
 
         # recent_turns 摘要(只 status=ok)
-        recent_ok = [t for t in recent_turns if t.status == "ok"]
-        for turn in recent_ok[-self.config.recent_turns_count:]:
-            summary = self._summarize_turn_for_reference(turn)
-            if summary:
-                refs.append(ReferenceItem(
-                    label=f"recent_turn:{turn.input.turn_index}",
-                    content=summary,
-                    score=None,
-                ))
+        # 守护:Python 切片 [-0:] 返回整 list,与 recent_turns_count=0 "不带 recent" 语义相反
+        if self.config.recent_turns_count > 0:
+            recent_ok = [t for t in recent_turns if t.status == "ok"]
+            for turn in recent_ok[-self.config.recent_turns_count:]:
+                summary = self._summarize_turn_for_reference(turn)
+                if summary:
+                    refs.append(ReferenceItem(
+                        label=f"recent_turn:{turn.input.turn_index}",
+                        content=summary,
+                        score=None,
+                    ))
 
         # 后续 priority kinds
         for kind in priority[1:]:

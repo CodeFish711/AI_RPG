@@ -474,3 +474,37 @@ async def test_turn_loop_build_references_first_turn_has_no_recent_turns(tmp_pat
 
     guard_msg = gateway.invocations[1].messages[1]
     assert "recent_turn:" not in guard_msg.content
+
+
+@pytest.mark.asyncio
+async def test_turn_loop_recent_turns_count_zero_excludes_recent_turns_from_references(tmp_path: Path):
+    """recent_turns_count=0 应该不带 recent_turns 进 references(防御 Python [-0:] 切片 bug)。"""
+    from core.turn_loop import TurnLoop, TurnLoopConfig
+
+    gateway = FakeStructuredGateway()
+    for i in range(2):
+        gateway.queue_response(_Beat, _Beat(narration=f"narration_{i}_unique_token"))
+        gateway.queue_response(GuardDecision, GuardDecision(decision="accept", findings=[]))
+
+    narrative, guard, wm, store = _build_components(gateway=gateway, tmp_path=tmp_path)
+    loop = TurnLoop(
+        narrative_agent=narrative,
+        guard=guard,
+        world_memory=wm,
+        turn_store=store,
+        config=TurnLoopConfig(
+            narrative_output_schema=_Beat,
+            response_text_field="narration",
+            retrieval_kinds=[],
+            references_priority_kinds=[],
+            guard_rules=[],
+            recent_turns_count=0,  # 关键:0 应表示 "不带 recent"
+        ),
+    )
+
+    await loop.run_turn(session_id="sess_zero", raw_text="action 0")
+    await loop.run_turn(session_id="sess_zero", raw_text="action 1")
+
+    # 第 2 轮 Guard references 不应含任何 "recent_turn:" label
+    second_guard_msg = gateway.invocations[3].messages[1]
+    assert "recent_turn:" not in second_guard_msg.content
