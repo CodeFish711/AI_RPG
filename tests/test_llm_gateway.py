@@ -189,7 +189,7 @@ async def test_gateway_circuit_resets_consecutive_failures_after_success():
 @pytest.mark.asyncio
 async def test_gateway_circuit_closes_after_window_expires():
     """熔断打开后,window 时间过去 → 下次调用恢复尝试。"""
-    from datetime import UTC, datetime, timedelta
+    import time
 
     from core.llm_gateway import GatewayCircuitOpen, LLMGateway, LLMGatewayError
 
@@ -202,18 +202,15 @@ async def test_gateway_circuit_closes_after_window_expires():
     )
     request = LLMRequest(messages=[Message(role="user", content="ping")])
 
-    # 触发熔断(2 次失败到阈值)
-    for _ in range(2):
+    for i in range(2):
         with pytest.raises(LLMGatewayError):
             await gateway.complete(request)
-    # 第 3 次确认熔断已打开
     with pytest.raises(GatewayCircuitOpen):
         await gateway.complete(request)
 
-    # 把 circuit_open_until 手动倒回过去(模拟时间流逝 > window)
-    gateway.circuit_open_until = datetime.now(UTC) - timedelta(seconds=1)
+    # 把 circuit_open_until 倒回过去(monotonic float)
+    gateway.circuit_open_until = time.monotonic() - 1.0
 
-    # 下次调用应该尝试请求(虽然 transport 仍 fail,但不会立即 GatewayCircuitOpen)
     with pytest.raises(LLMGatewayError) as exc_info:
         await gateway.complete(request)
     assert not isinstance(exc_info.value, GatewayCircuitOpen)
