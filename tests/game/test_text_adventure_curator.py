@@ -1,4 +1,3 @@
-import pytest
 
 
 def _make_curator():
