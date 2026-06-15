@@ -44,8 +44,8 @@ def world_seed_to_fragments(seed: WorldSeed, *, question_id: str) -> list[Memory
 def causal_packet_to_fragments(packet: CausalImpactPacket) -> list[MemoryFragment]:
     impact_lines = [
         (
-            f"- target={impact.target_type}:{impact.target_hint}; "
-            f"delay_ticks={impact.delay_ticks}; intensity={impact.intensity}; "
+            f"- target={impact.target_hint}; "
+            f"intensity={impact.intensity}; "
             f"{impact.impact_summary}"
         )
         for impact in packet.impacts

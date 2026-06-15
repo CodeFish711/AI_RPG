@@ -65,8 +65,8 @@ def build_causality_task(answer: PlayerWorldAnswer, world_seed: WorldSeed, debat
             "debate_tensions": debate_tensions,
         },
         required_output=(
-            "Return a CausalImpactPacket JSON object. Each impact must include target_type, "
-            "target_hint, impact_summary, intensity, and delay_ticks."
+            "Return a CausalImpactPacket JSON object. Each impact must include "
+            "target_hint, impact_summary, and intensity."
         ),
     )
 

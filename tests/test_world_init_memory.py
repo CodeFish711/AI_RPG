@@ -34,11 +34,9 @@ def test_causal_packet_to_fragments_creates_causal_seed_memory():
         trigger_summary="Memory price changes future incentives.",
         impacts=[
             CausalImpact(
-                target_type="rule",
                 target_hint="memory escalation",
                 impact_summary="Costs should grow over repeated use.",
                 intensity=0.7,
-                delay_ticks=2,
             )
         ],
     )

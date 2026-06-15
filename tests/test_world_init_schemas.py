@@ -66,23 +66,19 @@ def test_world_seed_and_causal_packet_validate_impact_bounds():
         trigger_summary="The accepted law changes future choices.",
         impacts=[
             CausalImpact(
-                target_type="rule",
                 target_hint="future price escalation",
                 impact_summary="Future powerful actions should become more costly.",
                 intensity=0.7,
-                delay_ticks=3,
             )
         ],
     )
 
-    assert packet.impacts[0].target_type == "rule"
+    assert packet.impacts[0].target_hint == "future price escalation"
 
     with pytest.raises(ValidationError):
         CausalImpact(
-            target_type="rule",
             target_hint="bad intensity",
             impact_summary="Invalid",
             intensity=2.0,
-            delay_ticks=0,
         )
 

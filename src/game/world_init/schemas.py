@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -40,11 +39,9 @@ class WorldSeed(BaseModel):
 
 
 class CausalImpact(BaseModel):
-    target_type: Literal["node", "group", "region", "rule", "unknown"]
     target_hint: str = Field(min_length=1)
     impact_summary: str = Field(min_length=1)
     intensity: float = Field(ge=0.0, le=1.0)
-    delay_ticks: int = Field(ge=0)
     tags: list[str] = Field(default_factory=list)
 
 

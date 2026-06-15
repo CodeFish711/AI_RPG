@@ -50,11 +50,9 @@ class FakeRuntime:
                 trigger_summary="Memory price changes future incentives.",
                 impacts=[
                     CausalImpact(
-                        target_type="rule",
                         target_hint="memory cost escalation",
                         impact_summary="Repeated use should create delayed identity pressure.",
                         intensity=0.8,
-                        delay_ticks=2,
                     )
                 ],
             )
