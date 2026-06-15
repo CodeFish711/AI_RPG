@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.agents.debate import DebateSessionResult
+from game.world_init.debate import DebateSessionResult
 from core.agents.schemas import AgentTask
 from game.world_init.schemas import PlayerWorldAnswer, WorldSeed, WorldSeedCandidate
 

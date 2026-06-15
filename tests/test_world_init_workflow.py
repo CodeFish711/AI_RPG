@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from core.agents.debate import DebateTurn
+from game.world_init.debate import DebateTurn
 from core.agents.schemas import AgentProfile, AgentTask
 from game.world_init.schemas import (
     CausalImpact,

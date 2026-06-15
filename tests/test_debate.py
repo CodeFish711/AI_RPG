@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.agents.debate import DebateSession, DebateSessionResult, DebateTurn
+from game.world_init.debate import DebateSession, DebateSessionResult, DebateTurn
 from core.agents.schemas import AgentProfile, AgentTask
 
 

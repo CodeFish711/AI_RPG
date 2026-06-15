@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from core.agents.debate import DebateSession, DebateSessionResult
+from game.world_init.debate import DebateSession, DebateSessionResult
 from core.agents.runtime import AgentRuntime
 from game.world_init.agents import (
     build_causality_analyzer_profile,

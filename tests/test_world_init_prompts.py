@@ -1,4 +1,4 @@
-from core.agents.debate import DebateSessionResult, DebateTurn
+from game.world_init.debate import DebateSessionResult, DebateTurn
 from game.world_init.prompts import (
     build_causality_task,
     build_debate_task,
