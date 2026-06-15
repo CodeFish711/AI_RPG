@@ -3,7 +3,6 @@ from game.world_init.prompts import (
     build_causality_task,
     build_debate_task,
     build_guard_task,
-    build_revision_task,
     build_synthesis_task,
 )
 from game.world_init.schemas import PlayerWorldAnswer, WorldLaw, WorldSeed, WorldSeedCandidate
@@ -57,21 +56,3 @@ def test_build_guard_and_causality_tasks_keep_structured_context():
     assert guard_task.context["candidate"]["premise"] == "Power costs memory."
     assert "CausalImpactPacket" in causal_task.required_output
     assert causal_task.context["world_seed"]["id"] == "seed-1"
-
-
-def test_build_revision_task_includes_guard_findings_and_previous_candidate():
-    debate = DebateSessionResult(
-        turns=[DebateTurn(agent_id="critic", position="Needs specificity", claims=["Define recovery methods."])]
-    )
-    candidate = WorldSeedCandidate(
-        premise="Power costs memory.",
-        laws=[WorldLaw(name="Memory Price", statement="Every act consumes a true memory.")],
-        tensions=["Power erodes identity."],
-        source_summary="Synthesized.",
-    )
-
-    task = build_revision_task(_answer(), debate, candidate, ["Define memory tiers objectively."])
-
-    assert "revise" in task.instruction.lower()
-    assert task.context["guard_findings"] == ["Define memory tiers objectively."]
-    assert task.context["previous_candidate"]["premise"] == "Power costs memory."
