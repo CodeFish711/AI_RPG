@@ -6,6 +6,28 @@
 
 不验 Guard 真实推理能力(用 FakeStructuredGateway 编排 reject)— 那留 Phase D
 live smoke。
+
+## 中文 fixture 加空格的说明(workaround)
+
+stored memory 与 query 中的长中文短语刻意加了空格(如 "魔法 需 血液 代价"
+而非 "魔法需血液代价")。原因:`InMemoryRAGRepository._terms()` 用
+`re.findall(r"[\\w]+", text.lower())` tokenize,连续中文被识别为单个
+token,空格分词的 query 与无空格的 stored content 无 token overlap,
+cosine score = 0 → references 为空 → 测试假阴性 FAIL。
+
+⚠ Phase D 切到 ChromaRAGRepository **不会自动解决**这个问题 —
+ChromaRAG 的 hashed_text_embedding() 内部也调 _terms(),同一 tokenize
+缺陷会随到 Phase D。Phase D contract 文档(extending-the-engine.md)
+会加显式警告。彻底解法是引入 jieba 或真实 embedding model,
+Phase D / E 处理。
+
+## 断言信号设计
+
+每个测试的断言 substring 都刻意选**只在 stored memory 出现、不在
+narration / proposal 出现的词**,确保测试真正验证 "references 注入"
+路径,而不是被 proposal payload 中相同词汇假阳性满足。例如 test 3
+narration 用 "崭新的钥匙",断言用 "黄铜" / "持有"(只在 stored memory
+出现)。
 """
 
 from pathlib import Path
