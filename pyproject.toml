@@ -8,6 +8,7 @@ dependencies = [
     "pydantic>=2.7,<3.0",
     "pydantic-settings>=2.2,<3.0",
     "python-dotenv>=1.0,<2.0",
+    "jieba>=0.42,<1.0",
 ]
 
 [project.optional-dependencies]
@@ -30,3 +31,4 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src", "."]
 asyncio_mode = "auto"
+markers = ["live: requires MIMO_API_KEY (opt-in)"]
